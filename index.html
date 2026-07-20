@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>YipYap! Group Chat (Profiles, Codes, Public/Private)</title>
+    <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
+</head>
+<body>
+    <h1>YipYap! Group Chat</h1>
+    <p>Simple P2P group chat with nicknames, followers, and public/private rooms.</p>
+
+    <!-- Nickname selection -->
+    <div id="nicknameArea">
+        <p id="nicknamePrompt">Choose a nickname:</p>
+        <input type="text" id="nicknameInput" placeholder="Your name">
+        <button id="nicknameBtn" onclick="setNickname()">Continue</button>
+        <button id="changeNickBtn" hidden onclick="resetNickname()">Change nickname</button>
+        <p id="nicknameError" style="color:red;"></p>
+    </div>
+
+    <!-- Main menu -->
+    <div id="main" hidden>
+        <button onclick="showHost()">Host Room</button>
+        <button onclick="showJoin()">Join Room</button>
+        <button onclick="showProfile()">My Profile & Followers</button>
+    </div>
+
+    <!-- Profile panel -->
+    <div id="profilePanel" hidden>
+        <h3>Profile: <span id="profileNickDisplay"></span></h3>
+        <p>Find/Follow User: <input type="text" id="followInput" placeholder="Enter nickname"> <button onclick="followUser()">Follow</button></p>
+        <p id="followStatus" style="color:red;"></p>
+        
+        <div style="float: left; width: 45%;">
+            <b>Following:</b>
+            <ul id="followingList"></ul>
+        </div>
+        <div style="float: left; width: 45%;">
+            <b>Followers:</b>
+            <ul id="followersList"></ul>
+        </div>
+        <div style="clear: both;"></div>
+        <button onclick="hideProfile()">Back to Main</button>
+    </div>
+
+    <!-- Host panel -->
+    <div id="hostPanel" hidden>
+        <p>Room name: <input type="text" id="hostRoomInput" placeholder="e.g. pizza"></p>
+        <p><input type="checkbox" id="hostPrivateCheckbox" onchange="toggleHostCode()"> Private Room</p>
+        <p id="joinCodeDisplay" hidden>Share this Code: <b id="joinCodeText"></b></p>
+        <button onclick="startHost()">Start Hosting</button>
+        <p id="hostError" style="color:red;"></p>
+        <button onclick="hideHost()">Back</button>
+    </div>
+
+    <!-- Join panel -->
+    <div id="joinPanel" hidden>
+        <p>Room name: <input type="text" id="joinRoomInput" placeholder="same name as host"></p>
+        <p><input type="checkbox" id="joinPrivateCheckbox" onchange="toggleJoinCode()"> Private Room</p>
+        <p id="joinCodeArea" hidden>Join Code: <input type="text" id="joinCodeInput" placeholder="e.g. X7A9" maxlength="4"></p>
+        <button onclick="startJoin()">Join Room</button>
+        <p id="joinError" style="color:red;"></p>
+        
+        <hr>
+        <button onclick="browsePublicRooms()">Browse Public Rooms</button>
+        <ul id="publicRoomsList"></ul>
+        
+        <button onclick="hideJoin()">Back</button>
+    </div>
+
+    <!-- Chat area -->
+    <div id="chatArea" hidden>
+        <p><b id="roomLabel"></b> | You are: <b id="myNickDisplay"></b></p>
+        <pre id="messages" style="height: 200px; overflow-y: scroll; border: 1px solid black; padding: 5px;"></pre>
+        <input type="text" id="chatInput" placeholder="Type a message..." disabled>
+        <button id="sendBtn" disabled onclick="sendChat()">Send</button>
+        <br><br>
+        <button onclick="leaveRoom()">Leave Room</button>
+    </div>
+
+    <script>
+        // ---------- Globals ----------
+        let myNickname = null;
+        let hostPeer = null;
+        let guestPeer = null;
+        let guestConn = null;
+        let hostConnections = [];    
+        let myRole = null;           
+        let roomName = null;
+
+        // Profile & Directory Peers
+        let profilePeer = null;
+        let directoryPeer = null;
+        let profileConns = []; // Connections to people I follow
+        let publicRooms = []; // In-memory list if I am the directory
+
+        // Storage Keys
+        const STORAGE_KEY = 'yipyap_nickname';
+        const FOLLOWING_KEY = 'yipyap_following';
+        const FOLLOWERS_KEY = 'yipyap_followers';
+
+        // ---------- Storage Helpers ----------
+        function loadSavedNickname() { return localStorage.getItem(STORAGE_KEY); }
+        function saveNickname(name) { localStorage.setItem(STORAGE_KEY, name); }
+        function clearSavedNickname() { localStorage.removeItem(STORAGE_KEY); }
+
+        function getFollowing() { return JSON.parse(localStorage.getItem(FOLLOWING_KEY) || '[]'); }
+        function saveFollowing(arr) { localStorage.setItem(FOLLOWING_KEY, JSON.stringify(arr)); }
+        function getFollowers() { return JSON.parse(localStorage.getItem(FOLLOWERS_KEY) || '[]'); }
+        function saveFollowers(arr) { localStorage.setItem(FOLLOWERS_KEY, JSON.stringify(arr)); }
+
+        // ---------- Nickname UI ----------
+        function showNicknameUI() {
+            const saved = loadSavedNickname();
+            const promptEl = document.getElementById('nicknamePrompt');
+            const inputEl = document.getElementById('nicknameInput');
+            const btnEl = document.getElementById('nicknameBtn');
+            const changeBtn = document.getElementById('changeNickBtn');
+            const errorEl = document.getElementById('nicknameError');
+            
+            errorEl.innerText = '';
+            inputEl.hidden = false;
+            
+            if (saved) {
+                promptEl.innerText = 'Welcome back, ' + saved + '!';
+                inputEl.value = saved;
+                btnEl.innerText = 'Continue as ' + saved;
+                changeBtn.hidden = false;
+            } else {
+                promptEl.innerText = 'Choose a nickname:';
+                inputEl.value = '';
+                btnEl.innerText = 'Continue';
+                changeBtn.hidden = true;
+            }
+        }
+
+        function setNickname() {
+            const saved = loadSavedNickname();
+            const inputEl = document.getElementById('nicknameInput');
+            let name = inputEl.value.trim();
+
+            if (!name && saved) name = saved;
+            if (!name) {
+                document.getElementById('nicknameError').innerText = 'Please enter a nickname.';
+                return;
+            }
+
+            name = name.replace(/\s/g, '').substring(0, 20);
+            if (!name) {
+                document.getElementById('nicknameError').innerText = 'Invalid nickname.';
+                return;
+            }
+
+            myNickname = name;
+            saveNickname(name);
+            
+            document.getElementById('nicknameArea').hidden = true;
+            document.getElementById('main').hidden = false;
+            
+            initProfilePeer();
+        }
+
+        function resetNickname() {
+            if (profilePeer) profilePeer.destroy();
+            clearSavedNickname();
+            myNickname = null;
+            document.getElementById('nicknameArea').hidden = false;
+            document.getElementById('main').hidden = true;
+            showNicknameUI();
+            document.getElementById('nicknameInput').focus();
+        }
+
+        // ---------- Profile Peer Logic ----------
+        function initProfilePeer() {
+            if (profilePeer) profilePeer.destroy();
+            // Background peer for receiving follows and DMs
+            profilePeer = new Peer('yipyap-profile-' + myNickname);
+
+            profilePeer.on('open', () => {
+                console.log('Profile peer active for ' + myNickname);
+                updateProfileUI();
+            });
+
+            profilePeer.on('connection', (conn) => {
+                conn.on('open', () => {
+                    conn.on('data', (data) => {
+                        try {
+                            const msg = JSON.parse(data);
+                            if (msg.type === 'follow') {
+                                let followers = getFollowers();
+                                if (!followers.includes(msg.nick)) {
+                                    followers.push(msg.nick);
+                                    saveFollowers(followers);
+                                    updateProfileUI();
+                                }
+                                conn.send(JSON.stringify({ type: 'follow_ack', nick: myNickname }));
+                            } else if (msg.type === 'dm') {
+                                appendMessage('DM from ' + msg.nick + ': ' + msg.text);
+                            }
+                        } catch (e) { console.error("Bad profile data", e); }
+                    });
+                });
+            });
+
+            profilePeer.on('error', (err) => {
+                console.error('Profile peer error:', err);
+            });
+        }
+
+        function followUser() {
+            const targetNick = document.getElementById('followInput').value.trim().replace(/\s/g, '');
+            if (!targetNick || targetNick === myNickname) {
+                document.getElementById('followStatus').innerText = 'Invalid nickname.';
+                return;
+            }
+
+            const conn = profilePeer.connect('yipyap-profile-' + targetNick);
+            conn.on('open', () => {
+                conn.send(JSON.stringify({ type: 'follow', nick: myNickname }));
+                conn.on('data', (data) => {
+                    try {
+                        const msg = JSON.parse(data);
+                        if (msg.type === 'follow_ack') {
+                            let following = getFollowing();
+                            if (!following.includes(targetNick)) {
+                                following.push(targetNick);
+                                saveFollowing(following);
+                                updateProfileUI();
+                                document.getElementById('followStatus').innerText = 'Successfully followed ' + targetNick;
+                                document.getElementById('followStatus').style.color = 'green';
+                            }
+                        }
+                    } catch(e) {}
+                });
+            });
+
+            conn.on('error', () => {
+                document.getElementById('followStatus').innerText = 'User "' + targetNick + '" is offline or does not exist.';
+                document.getElementById('followStatus').style.color = 'red';
+            });
+        }
+
+        function updateProfileUI() {
+            document.getElementById('profileNickDisplay').innerText = myNickname;
+            const fList = document.getElementById('followingList');
+            const ersList = document.getElementById('followersList');
+            fList.innerHTML = '';
+            ersList.innerHTML = '';
+            
+            getFollowing().forEach(nick => {
+                let li = document.createElement('li');
+                li.innerText = nick;
+                fList.appendChild(li);
+            });
+            getFollowers().forEach(nick => {
+                let li = document.createElement('li');
+                li.innerText = nick;
+                ersList.appendChild(li);
+            });
+        }
+
+        function showProfile() {
+            hide('main'); hide('hostPanel'); hide('joinPanel'); hide('chatArea');
+            show('profilePanel');
+            updateProfileUI();
+        }
+        function hideProfile() {
+            hide('profilePanel');
+            show('main');
+        }
+
+        // ---------- UI helpers ----------
+        function show(id) { document.getElementById(id).hidden = false; }
+        function hide(id) { document.getElementById(id).hidden = true; }
+        
+        function appendMessage(text) {
+            const pre = document.getElementById('messages');
+            pre.textContent += text + '\n';
+            pre.scrollTop = pre.scrollHeight;
+        }
+
+        // ---------- Host Panel Logic ----------
+        function showHost() {
+            hide('main'); hide('joinPanel'); hide('chatArea'); hide('profilePanel');
+            show('hostPanel');
+            document.getElementById('hostError').innerText = '';
+            document.getElementById('hostRoomInput').focus();
+        }
+        function hideHost() {
+            hide('hostPanel');
+            show('main');
+        }
+
+        function toggleHostCode() {
+            const isPrivate = document.getElementById('hostPrivateCheckbox').checked;
+            if (isPrivate) {
+                const code = Math.random().toString(36).substring(2, 6).toUpperCase();
+                document.getElementById('joinCodeText').innerText = code;
+                show('joinCodeDisplay');
+            } else {
+                hide('joinCodeDisplay');
+            }
+        }
+
+        // ---------- Join Panel Logic ----------
+        function showJoin() {
+            hide('main'); hide('hostPanel'); hide('chatArea'); hide('profilePanel');
+            show('joinPanel');
+            document.getElementById('joinError').innerText = '';
+            document.getElementById('joinRoomInput').focus();
+        }
+        function hideJoin() {
+            hide('joinPanel');
+            show('main');
+        }
+
+        function toggleJoinCode() {
+            const isPrivate = document.getElementById('joinPrivateCheckbox').checked;
+            if (isPrivate) {
+                show('joinCodeArea');
+            } else {
+                hide('joinCodeArea');
+            }
+        }
+
+        // ---------- Host Chat Logic ----------
+        function startHost() {
+            roomName = document.getElementById('hostRoomInput').value.trim();
+            if (!roomName) {
+                document.getElementById('hostError').innerText = 'Please enter a room name.';
+                return;
+            }
+
+            const isPrivate = document.getElementById('hostPrivateCheckbox').checked;
+            let peerId = 'yipyap-room-' + roomName;
+            let joinCode = null;
+
+            if (isPrivate) {
+                joinCode = document.getElementById('joinCodeText').innerText;
+                peerId += '_' + joinCode;
+            }
+
+            if (hostPeer) hostPeer.destroy();
+            if (guestPeer) { guestPeer.destroy(); guestPeer = null; }
+            hostConnections = [];
+            myRole = 'host';
+
+            hostPeer = new Peer(peerId);
+
+            hostPeer.on('open', () => {
+                showChat(roomName);
+                appendMessage('System: Room "' + roomName + '" is open.');
+                if (isPrivate) {
+                    appendMessage('System: Private room. Join Code: ' + joinCode);
+                } else {
+                    registerPublicRoom(roomName);
+                }
+            });
+
+            hostPeer.on('connection', (conn) => {
+                let nick = (conn.metadata && conn.metadata.nick) ? conn.metadata.nick : conn.peer;
+                const entry = { conn: conn, nick: nick };
+                hostConnections.push(entry);
+
+                conn.on('open', () => {
+                    let userList = [myNickname];
+                    hostConnections.forEach(e => {
+                        if (e.conn !== conn && e.nick) userList.push(e.nick);
+                    });
+                    
+                    conn.send(JSON.stringify({ 
+                        type: 'system', 
+                        text: 'Connected to room. Users: ' + userList.join(', ')
+                    }));
+
+                    appendMessage('System: ' + nick + ' joined');
+                    broadcastToAllExcept(conn, { type: 'system', text: nick + ' joined' });
+                });
+
+                conn.on('data', (data) => {
+                    try {
+                        const msgObj = JSON.parse(data);
+                        if (msgObj.type === 'chat') {
+                            appendMessage(entry.nick + ': ' + msgObj.msg);
+                            broadcastToAllExcept(conn, { type: 'chat', nick: entry.nick, msg: msgObj.msg });
+                        }
+                    } catch (e) { console.error('Bad data from', conn.peer, e); }
+                });
+
+                conn.on('close', () => {
+                    const leftNick = entry.nick || conn.peer;
+                    hostConnections = hostConnections.filter(e => e !== entry);
+                    appendMessage('System: ' + leftNick + ' left');
+                    broadcastToAllExcept(conn, { type: 'system', text: leftNick + ' left' });
+                });
+            });
+
+            hostPeer.on('error', (err) => {
+                console.error('Host peer error:', err);
+                if (err.type === 'unavailable-id') {
+                    document.getElementById('hostError').innerText = 'Room name already in use. Try another.';
+                } else {
+                    document.getElementById('hostError').innerText = 'Error: ' + err.message;
+                }
+                if (hostPeer) { hostPeer.destroy(); hostPeer = null; }
+                if (myRole === 'host') { hide('chatArea'); show('hostPanel'); myRole = null; }
+            });
+        }
+
+        function broadcastToAllExcept(excludeConn, obj) {
+            const data = JSON.stringify(obj);
+            hostConnections.forEach(entry => {
+                if (entry.conn !== excludeConn && entry.conn.open) {
+                    entry.conn.send(data);
+                }
+            });
+        }
+
+        // ---------- Guest Chat Logic ----------
+        function startJoin() {
+            roomName = document.getElementById('joinRoomInput').value.trim();
+            if (!roomName) {
+                document.getElementById('joinError').innerText = 'Please enter the room name.';
+                return;
+            }
+
+            const isPrivate = document.getElementById('joinPrivateCheckbox').checked;
+            let targetId = 'yipyap-room-' + roomName;
+
+            if (isPrivate) {
+                const code = document.getElementById('joinCodeInput').value.trim().toUpperCase();
+                if (!code) {
+                    document.getElementById('joinError').innerText = 'Please enter the join code.';
+                    return;
+                }
+                targetId += '_' + code;
+            }
+
+            if (guestPeer) guestPeer.destroy();
+            if (hostPeer) { hostPeer.destroy(); hostPeer = null; }
+            myRole = 'guest';
+
+            guestPeer = new Peer();
+
+            guestPeer.on('open', (id) => {
+                guestConn = guestPeer.connect(targetId, { metadata: { nick: myNickname } });
+                
+                guestConn.on('open', () => {
+                    showChat(roomName);
+                });
+
+                guestConn.on('data', (data) => {
+                    try {
+                        const msgObj = JSON.parse(data);
+                        if (msgObj.type === 'chat') {
+                            appendMessage(msgObj.nick + ': ' + msgObj.msg);
+                        } else if (msgObj.type === 'system') {
+                            appendMessage('System: ' + msgObj.text);
+                        }
+                    } catch (e) { }
+                });
+
+                guestConn.on('close', () => {
+                    appendMessage('System: Disconnected from room.');
+                    setTimeout(() => { leaveRoom(); }, 1000);
+                });
+
+                guestConn.on('error', (err) => {
+                    appendMessage('Error: ' + err);
+                    console.error(err);
+                });
+            });
+
+            guestPeer.on('error', (err) => {
+                console.error('Guest peer error:', err);
+                if (err.type === 'peer-unavailable') {
+                    document.getElementById('joinError').innerText = 'Room not found. Check the name/code and try again.';
+                } else {
+                    document.getElementById('joinError').innerText = 'Error: ' + err.message;
+                }
+                if (guestPeer) { guestPeer.destroy(); guestPeer = null; }
+            });
+        }
+
+        // ---------- Directory Logic ----------
+        function registerPublicRoom(room) {
+            let dirConn = profilePeer.connect('yipyap-directory-main');
+            dirConn.on('open', () => {
+                dirConn.send(JSON.stringify({ type: 'register_room', room: room, host: myNickname }));
+            });
+            dirConn.on('error', () => console.log("Directory offline, room not registered publicly."));
+        }
+
+        function browsePublicRooms() {
+            const listEl = document.getElementById('publicRoomsList');
+            listEl.innerHTML = '<li>Searching for public rooms...</li>';
+            
+            let dirConn = profilePeer.connect('yipyap-directory-main');
+            
+            dirConn.on('open', () => {
+                dirConn.send(JSON.stringify({ type: 'get_rooms' }));
+                dirConn.on('data', (data) => {
+                    try {
+                        const msg = JSON.parse(data);
+                        if (msg.type === 'room_list') {
+                            listEl.innerHTML = '';
+                            if (msg.rooms.length === 0) {
+                                listEl.innerHTML = '<li>No public rooms currently active.</li>';
+                            } else {
+                                msg.rooms.forEach(r => {
+                                    let li = document.createElement('li');
+                                    li.innerHTML = '<b>' + r.room + '</b> (Host: ' + r.host + ') <button onclick="joinFromDir(\'' + r.room + '\')">Join</button>';
+                                    listEl.appendChild(li);
+                                });
+                            }
+                        }
+                    } catch(e) {}
+                });
+            });
+
+            dirConn.on('error', () => {
+                listEl.innerHTML = '<li>Directory offline. You must join manually by name.</li>';
+            });
+        }
+
+        function joinFromDir(room) {
+            document.getElementById('joinRoomInput').value = room;
+            document.getElementById('joinPrivateCheckbox').checked = false;
+            toggleJoinCode();
+            startJoin();
+        }
+
+        // ---------- Send Chat Message ----------
+        function sendChat() {
+            const input = document.getElementById('chatInput');
+            const text = input.value.trim();
+            if (!text) return;
+            input.value = '';
+
+            if (myRole === 'host') {
+                appendMessage('You: ' + text);
+                const msgObj = { type: 'chat', nick: myNickname, msg: text };
+                hostConnections.forEach(entry => {
+                    if (entry.conn.open) entry.conn.send(JSON.stringify(msgObj));
+                });
+            } else if (myRole === 'guest') {
+                appendMessage('You: ' + text);
+                if (guestConn && guestConn.open) {
+                    guestConn.send(JSON.stringify({ type: 'chat', msg: text }));
+                }
+            }
+        }
+
+        // ---------- Leave Room ----------
+        function leaveRoom() {
+            if (myRole === 'host') {
+                hostConnections.forEach(entry => { if (entry.conn.open) entry.conn.close(); });
+                if (hostPeer) hostPeer.destroy();
+                hostPeer = null;
+                hostConnections = [];
+            } else if (myRole === 'guest') {
+                if (guestConn) guestConn.close();
+                if (guestPeer) guestPeer.destroy();
+                guestPeer = null;
+                guestConn = null;
+            }
+
+            myRole = null;
+            roomName = null;
+            
+            hide('chatArea'); hide('hostPanel'); hide('joinPanel'); hide('profilePanel');
+            show('main');
+            
+            document.getElementById('messages').textContent = '';
+            document.getElementById('chatInput').disabled = true;
+            document.getElementById('sendBtn').disabled = true;
+        }
+
+        function showChat(room) {
+            hide('hostPanel'); hide('joinPanel'); hide('main'); hide('profilePanel');
+            show('chatArea');
+            document.getElementById('roomLabel').innerText = 'Room: ' + room;
+            document.getElementById('myNickDisplay').innerText = myNickname;
+            document.getElementById('messages').textContent = '';
+            document.getElementById('chatInput').disabled = false;
+            document.getElementById('sendBtn').disabled = false;
+            document.getElementById('chatInput').focus();
+        }
+
+        // ---------- Keyboard Listeners ----------
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter') return;
+            const targetId = e.target.id;
+            if (targetId === 'chatInput') sendChat();
+            else if (targetId === 'nicknameInput') setNickname();
+            else if (targetId === 'hostRoomInput') startHost();
+            else if (targetId === 'joinRoomInput') startJoin();
+            else if (targetId === 'joinCodeInput') startJoin();
+            else if (targetId === 'followInput') followUser();
+        });
+
+        // ---------- Directory Peer Daemon ----------
+        // Attempt to become the directory if no one else is.
+        function initDirectoryDaemon() {
+            directoryPeer = new Peer('yipyap-directory-main');
+            directoryPeer.on('open', () => {
+                console.log("You are the YipYap Directory Node.");
+            });
+            directoryPeer.on('error', (err) => {
+                if (err.type === 'unavailable-id') {
+                    console.log("Directory Node already exists. Operating as client.");
+                    directoryPeer.destroy();
+                    directoryPeer = null;
+                }
+            });
+
+            if (directoryPeer) {
+                directoryPeer.on('connection', (conn) => {
+                    conn.on('open', () => {
+                        conn.on('data', (data) => {
+                            try {
+                                const msg = JSON.parse(data);
+                                if (msg.type === 'register_room') {
+                                    publicRooms = publicRooms.filter(r => r.room !== msg.room);
+                                    publicRooms.push({ room: msg.room, host: msg.host });
+                                } else if (msg.type === 'get_rooms') {
+                                    conn.send(JSON.stringify({ type: 'room_list', rooms: publicRooms }));
+                                }
+                            } catch(e) {}
+                        });
+                    });
+                });
+            }
+        }
+
+        // On page load
+        window.addEventListener('DOMContentLoaded', () => {
+            showNicknameUI();
+            initDirectoryDaemon();
+        });
+    </script>
+</body>
+</html>
