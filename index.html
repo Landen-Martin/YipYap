@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>YipYap! Advanced P2P Chat</title>
+    <title>YipYap! communications app</title>
     <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
 </head>
 <body>
     <h1>YipYap! Group Chat</h1>
-    <p>P2P Chat with Global Feed, Followers, Public Rooms, and Private Join Codes.</p>
+    <p>P2P communications app</p>
 
     <!-- Nickname Selection -->
     <div id="nicknameArea">
@@ -22,6 +22,8 @@
     <!-- Main Menu -->
     <div id="main" hidden>
         <h3>Global Feed</h3>
+        <!-- DWIM interest indicator -->
+        <p id="interestDisplay" style="font-size:0.9em; color:#444;"></p>
         <input type="text" id="postInput" placeholder="What's on your mind?" style="width: 300px;">
         <button onclick="postMessage()">Post to Feed</button>
         <div id="feedList" style="height: 200px; overflow-y: scroll; border: 1px solid black; margin-top: 10px; padding: 5px;"></div>
@@ -118,15 +120,123 @@
         // Background peer (Feed & Directory)
         let backgroundPeer = null;
         let isDirectory = false;
-        let activePublicRooms = {};
+        let activePublicRooms = [];   // now an array of { room, host, time }
         let activeFeedConns = [];
-        let globalFeed = []; // Newest at index 0
+        let globalFeed = [];         // Newest at index 0 (for DWIM scoring, not display order)
         let feedConn = null;
 
         const STORAGE_KEY_NICK = 'yipyap_nickname';
         const STORAGE_KEY_FOLLOWING = 'yipyap_following';
         const STORAGE_KEY_FOLLOWERS = 'yipyap_followers';
         const DIR_ID = 'yipyap-directory-v1';
+
+        // ---------- DWIM Algorithm State ----------
+        const DWIM_TOPICS = ['tech', 'sports', 'food'];
+        const DWIM_KEYWORDS = {
+            tech: ['ai', 'computer', 'code', 'robot', 'technology', 'software', 'programming', 'machine learning'],
+            sports: ['football', 'soccer', 'basketball', 'game', 'athlete', 'match', 'goal', 'championship'],
+            food: ['recipe', 'cook', 'restaurant', 'food', 'delicious', 'meal', 'chef', 'cuisine']
+        };
+        let dwimPrior = [1/3, 1/3, 1/3];
+        let dwimPosterior = [1/3, 1/3, 1/3];
+        let dwimRecentTopics = [];
+        let dwimUtilityWeights = { engagement: 0.6, longTermValue: 0.3, diversity: 0.1 };
+
+        function loadDwimPrior() {
+            const saved = localStorage.getItem('yipyap_dwim_prior');
+            if (saved) {
+                try {
+                    const arr = JSON.parse(saved);
+                    if (Array.isArray(arr) && arr.length === 3) dwimPrior = arr.map(v => Math.max(0.01, v));
+                } catch(e){}
+            }
+        }
+        function saveDwimPrior() {
+            localStorage.setItem('yipyap_dwim_prior', JSON.stringify(dwimPrior));
+        }
+        loadDwimPrior();
+
+        function dwimLikelihood(text) {
+            if (!text) return null;
+            const lower = text.toLowerCase();
+            const scores = DWIM_TOPICS.map(topic => {
+                const words = DWIM_KEYWORDS[topic];
+                let score = 0;
+                words.forEach(word => { if (lower.includes(word)) score += 1; });
+                return score + 0.1;
+            });
+            const total = scores.reduce((a,b)=>a+b, 0);
+            return scores.map(v => v / total);
+        }
+
+        function dwimUpdatePosterior(likelihood) {
+            if (!likelihood) return;
+            const unnorm = dwimPrior.map((p,i) => p * likelihood[i]);
+            const sum = unnorm.reduce((a,b)=>a+b, 1e-9);
+            dwimPosterior = unnorm.map(v => v / sum);
+        }
+
+        function dwimEntropy() {
+            return -dwimPosterior.reduce((s, p) => s + (p>0 ? p*Math.log(p) : 0), 0);
+        }
+
+        function dwimCheckClarification() {
+            const ent = dwimEntropy();
+            if (ent > 0.8 && dwimPosterior.some(p => p > 0.01 && p < 0.6)) {
+                const topIdx = dwimPosterior.indexOf(Math.max(...dwimPosterior));
+                const others = DWIM_TOPICS.filter((_, i) => i !== topIdx);
+                let secondIdx = 0;
+                let max2 = -1;
+                dwimPosterior.forEach((p, i) => { if (i !== topIdx && p > max2) { max2 = p; secondIdx = i; } });
+                const opt1 = DWIM_TOPICS[topIdx];
+                const opt2 = DWIM_TOPICS[secondIdx];
+                const answer = confirm("DWIM: I'm unsure about your interests. Which do you prefer more?\n" + opt1 + "  or  " + opt2 + "?");
+                if (answer !== null) {
+                    const chosen = answer ? opt1 : opt2;
+                    const idx = DWIM_TOPICS.indexOf(chosen);
+                    const newPost = [0.05, 0.05, 0.05];
+                    newPost[idx] = 0.9;
+                    dwimPosterior = newPost;
+                    dwimPrior = dwimPrior.map((p,i) => i===idx ? p+0.2*(1-p) : p-0.2*p);
+                    dwimPrior = dwimPrior.map(v => Math.max(0.01, v));
+                    const psum = dwimPrior.reduce((a,b)=>a+b, 1e-9);
+                    dwimPrior = dwimPrior.map(v => v/psum);
+                    saveDwimPrior();
+                    updateDwimDisplay();
+                }
+            }
+        }
+
+        function dwimClassifyPost(text) {
+            const lower = text.toLowerCase();
+            const scores = DWIM_TOPICS.map(topic => {
+                const words = DWIM_KEYWORDS[topic];
+                let score = 0;
+                words.forEach(w => { if (lower.includes(w)) score += 1; });
+                return score;
+            });
+            const total = scores.reduce((a,b)=>a+b, 1e-9);
+            return scores.map(v => v / total);
+        }
+
+        function dwimScorePost(post) {
+            const topicProbs = dwimClassifyPost(post.text);
+            const engagement = topicProbs.reduce((sum, p, i) => sum + p * dwimPosterior[i], 0);
+            const ltv = Math.min(1, post.text.length / 100);
+            const recentCount = dwimRecentTopics.filter(t => {
+                const idx = topicProbs.indexOf(Math.max(...topicProbs));
+                return DWIM_TOPICS[idx] === t;
+            }).length;
+            const diversity = 1 / (1 + recentCount);
+            return dwimUtilityWeights.engagement * engagement + dwimUtilityWeights.longTermValue * ltv + dwimUtilityWeights.diversity * diversity;
+        }
+
+        function updateDwimDisplay() {
+            const display = document.getElementById('interestDisplay');
+            if (!display) return;
+            const maxTopic = DWIM_TOPICS[dwimPosterior.indexOf(Math.max(...dwimPosterior))];
+            display.textContent = '🧠 Inferred interest: ' + maxTopic + ' (score: ' + dwimPosterior[dwimPosterior.indexOf(Math.max(...dwimPosterior))].toFixed(2) + ')';
+        }
 
         // ---------- Storage Helpers ----------
         function sanitizeNick(nick) {
@@ -190,6 +300,8 @@
             
             initProfilePeer();
             initBackgroundPeer();
+            updateDwimDisplay();
+            dwimCheckClarification();
         }
 
         function skipSignIn() {
@@ -199,9 +311,12 @@
             
             document.getElementById('nicknameArea').hidden = true;
             document.getElementById('main').hidden = false;
-            document.getElementById('profileBtn').hidden = true; // Guests don't have profiles
+            document.getElementById('profileBtn').hidden = true;
             
             initBackgroundPeer();
+            dwimPrior = [1/3, 1/3, 1/3];
+            dwimPosterior = [1/3, 1/3, 1/3];
+            updateDwimDisplay();
         }
 
         function resetNickname() {
@@ -215,7 +330,7 @@
             isGuest = false;
             globalFeed = [];
             activeFeedConns = [];
-            activePublicRooms = {};
+            activePublicRooms = [];
             
             document.getElementById('main').hidden = true;
             document.getElementById('profilePanel').hidden = true;
@@ -275,9 +390,8 @@
             isDirectory = false;
 
             backgroundPeer.on('open', () => {
-                console.log('Acting as Directory & Feed Host');
                 isDirectory = true;
-                renderFeed(globalFeed);
+                renderPersonalisedFeed();
             });
 
             backgroundPeer.on('connection', (conn) => {
@@ -289,17 +403,18 @@
                         const msg = JSON.parse(data);
                         if (msg.type === 'register_room') {
                             registeredRoom = msg.room;
-                            activePublicRooms[msg.room] = msg.host;
+                            // Add room entry with timestamp (newest first later)
+                            activePublicRooms.push({ room: msg.room, host: msg.host, time: Date.now() });
                         } else if (msg.type === 'get_rooms') {
-                            conn.send(JSON.stringify({ type: 'room_list', rooms: Object.keys(activePublicRooms) }));
+                            // Send room names sorted by time descending
+                            const sorted = [...activePublicRooms].sort((a,b) => b.time - a.time);
+                            conn.send(JSON.stringify({ type: 'room_list', rooms: sorted.map(r => r.room) }));
                         } else if (msg.type === 'get_feed') {
                             conn.send(JSON.stringify({ type: 'feed_data', posts: globalFeed }));
                         } else if (msg.type === 'new_post') {
-                            // No algorithm, just unshift to top
                             globalFeed.unshift(msg.post);
-                            if (globalFeed.length > 50) globalFeed.pop(); // Cap at 50
-                            renderFeed(globalFeed);
-                            // Broadcast to everyone else
+                            if (globalFeed.length > 50) globalFeed.pop();
+                            renderPersonalisedFeed();
                             activeFeedConns.forEach(c => {
                                 if (c !== conn && c.open) c.send(JSON.stringify({ type: 'new_post', post: msg.post }));
                             });
@@ -309,22 +424,21 @@
 
                 conn.on('close', () => {
                     activeFeedConns = activeFeedConns.filter(c => c !== conn);
-                    if (registeredRoom) delete activePublicRooms[registeredRoom];
+                    if (registeredRoom) {
+                        // Remove all entries for that room (in case of duplicates)
+                        activePublicRooms = activePublicRooms.filter(r => r.room !== registeredRoom);
+                    }
                 });
             });
 
             backgroundPeer.on('error', (err) => {
                 if (err.type === 'unavailable-id') {
-                    // We are a client. Directory is hosted by someone else.
                     isDirectory = false;
                     if (backgroundPeer) backgroundPeer.destroy();
-                    backgroundPeer = new Peer(); // Create a normal client peer
-                    
+                    backgroundPeer = new Peer();
                     backgroundPeer.on('open', () => {
                         connectToFeed();
                     });
-                } else {
-                    console.error('Background peer error:', err);
                 }
             });
         }
@@ -332,79 +446,119 @@
         function connectToFeed() {
             if (isDirectory) return;
             feedConn = backgroundPeer.connect(DIR_ID);
-            
             feedConn.on('open', () => {
                 feedConn.send(JSON.stringify({ type: 'get_feed' }));
             });
-
             feedConn.on('data', (data) => {
                 try {
                     const msg = JSON.parse(data);
                     if (msg.type === 'feed_data') {
-                        renderFeed(msg.posts);
+                        globalFeed = msg.posts || [];
+                        renderPersonalisedFeed();
                     } else if (msg.type === 'new_post') {
-                        prependPost(msg.post);
+                        globalFeed.unshift(msg.post);
+                        if (globalFeed.length > 50) globalFeed.pop();
+                        renderPersonalisedFeed();
                     }
                 } catch(e) {}
             });
-
             feedConn.on('close', () => {
-                document.getElementById('feedList').innerHTML = '<p>Feed disconnected. Directory may be offline.</p>';
+                document.getElementById('feedList').innerHTML = '<p>Feed disconnected.</p>';
             });
         }
 
+        // ---------- Post & Feed (with DWIM) ----------
         function postMessage() {
             const input = document.getElementById('postInput');
             const text = input.value.trim();
             if (!text) return;
-            
             const post = { nick: myNickname, text: text, time: Date.now() };
             input.value = '';
+
+            // DWIM update from own post
+            const likelihood = dwimLikelihood(text);
+            if (likelihood) {
+                const bestIdx = likelihood.indexOf(Math.max(...likelihood));
+                const lr = 0.1;
+                let newPrior = dwimPrior.map((p, i) => i === bestIdx ? p + lr*(1-p) : p - lr*p);
+                newPrior = newPrior.map(v => Math.max(0.01, v));
+                const sum = newPrior.reduce((a,b)=>a+b, 1e-9);
+                dwimPrior = newPrior.map(v => v/sum);
+                saveDwimPrior();
+                dwimUpdatePosterior(likelihood);
+                updateDwimDisplay();
+            }
 
             if (isDirectory) {
                 globalFeed.unshift(post);
                 if (globalFeed.length > 50) globalFeed.pop();
-                renderFeed(globalFeed);
+                renderPersonalisedFeed();
                 activeFeedConns.forEach(c => {
                     if (c.open) c.send(JSON.stringify({ type: 'new_post', post: post }));
                 });
             } else if (feedConn && feedConn.open) {
                 feedConn.send(JSON.stringify({ type: 'new_post', post: post }));
             } else {
-                prependPost(post); // Fallback if disconnected
+                globalFeed.unshift(post);
+                if (globalFeed.length > 50) globalFeed.pop();
+                renderPersonalisedFeed();
             }
+            dwimCheckClarification();
         }
 
-        function renderFeed(posts) {
+        function renderPersonalisedFeed() {
             const el = document.getElementById('feedList');
+            if (!el) return;
+            const sorted = [...globalFeed].sort((a,b) => dwimScorePost(b) - dwimScorePost(a));
             el.innerHTML = '';
-            if (posts.length === 0) {
+            if (sorted.length === 0) {
                 el.innerHTML = '<p>No posts yet. Be the first!</p>';
                 return;
             }
-            posts.forEach(p => prependPost(p, false));
+            dwimRecentTopics = [];
+            sorted.forEach(post => {
+                const topicProbs = dwimClassifyPost(post.text);
+                const bestIdx = topicProbs.indexOf(Math.max(...topicProbs));
+                const bestTopic = DWIM_TOPICS[bestIdx];
+                dwimRecentTopics.push(bestTopic);
+                if (dwimRecentTopics.length > 10) dwimRecentTopics.shift();
+                const div = document.createElement('div');
+                div.style.borderBottom = '1px solid #ccc';
+                div.style.padding = '5px';
+                const score = dwimScorePost(post).toFixed(2);
+                div.innerHTML = `<b>${post.nick}</b> <small>${new Date(post.time).toLocaleTimeString()}</small> (score: ${score})<br>${post.text}`;
+                const likeBtn = document.createElement('button');
+                likeBtn.textContent = '❤️ Like';
+                likeBtn.style.marginLeft = '10px';
+                likeBtn.onclick = function() {
+                    handleFeedLike(post);
+                };
+                div.appendChild(likeBtn);
+                el.appendChild(div);
+            });
         }
 
-        function prependPost(post, isNew = true) {
-            const el = document.getElementById('feedList');
-            if (el.innerHTML.includes('No posts yet')) el.innerHTML = '';
-            
-            const div = document.createElement('div');
-            div.style.borderBottom = '1px solid #ccc';
-            div.style.padding = '5px';
-            div.innerHTML = `<b>${post.nick}</b> <small>${new Date(post.time).toLocaleTimeString()}</small><br>${post.text}`;
-            
-            el.prepend(div);
+        function handleFeedLike(post) {
+            const topicProbs = dwimClassifyPost(post.text);
+            const bestIdx = topicProbs.indexOf(Math.max(...topicProbs));
+            const lr = 0.15;
+            let newPrior = dwimPrior.map((p, i) => i === bestIdx ? p + lr*(1-p) : p - lr*p);
+            newPrior = newPrior.map(v => Math.max(0.01, v));
+            const sum = newPrior.reduce((a,b)=>a+b, 1e-9);
+            dwimPrior = newPrior.map(v => v/sum);
+            saveDwimPrior();
+            const likelihood = dwimLikelihood(post.text);
+            if (likelihood) dwimUpdatePosterior(likelihood);
+            updateDwimDisplay();
+            renderPersonalisedFeed();
         }
 
-        // ---------- Profile Peer (Followers & DMs) ----------
+        // ---------- Profile Peer ----------
         function initProfilePeer() {
             if (profilePeer) profilePeer.destroy();
             profilePeer = new Peer('yp_' + myPeerId);
 
-            profilePeer.on('open', () => {
-                console.log('Profile peer active: yp_' + myPeerId);
-            });
+            profilePeer.on('open', () => {});
 
             profilePeer.on('connection', (conn) => {
                 conn.on('data', (data) => {
@@ -427,7 +581,7 @@
 
             profilePeer.on('error', (err) => {
                 if (err.type === 'unavailable-id') {
-                    alert('Your nickname is already in use elsewhere. Please choose another.');
+                    alert('Your nickname is already in use. Please choose another.');
                     resetNickname();
                 }
             });
@@ -436,12 +590,9 @@
         function followUser() {
             const target = document.getElementById('followInput').value.trim();
             if (!target) return;
-            
             const targetId = 'yp_' + sanitizeNick(target);
             document.getElementById('followError').innerText = '';
-
             const conn = profilePeer.connect(targetId, { reliable: true });
-            
             conn.on('open', () => {
                 conn.send(JSON.stringify({ type: 'follow', nick: myNickname }));
                 let following = loadJSON(STORAGE_KEY_FOLLOWING, []);
@@ -453,7 +604,6 @@
                 renderProfileLists();
                 document.getElementById('followInput').value = '';
             });
-
             conn.on('data', (data) => {
                 try {
                     const msg = JSON.parse(data);
@@ -461,9 +611,8 @@
                     else if (msg.type === 'dm') appendDMMessage(msg.nick + ': ' + msg.text);
                 } catch (e) {}
             });
-
             conn.on('error', () => {
-                document.getElementById('followError').innerText = 'Could not connect to ' + target + '. They might be offline.';
+                document.getElementById('followError').innerText = 'Could not connect to ' + target + '.';
             });
         }
 
@@ -471,7 +620,6 @@
             const target = document.getElementById('dmTargetInput').value.trim();
             const text = document.getElementById('dmInput').value.trim();
             if (!target || !text) return;
-
             let conn = followConns[target];
             if (!conn || !conn.open) {
                 conn = profilePeer.connect('yp_' + sanitizeNick(target), { reliable: true });
@@ -497,11 +645,9 @@
         function renderProfileLists() {
             const following = loadJSON(STORAGE_KEY_FOLLOWING, []);
             const followers = loadJSON(STORAGE_KEY_FOLLOWERS, []);
-
             document.getElementById('followingList').innerHTML = following.length > 0 
                 ? following.map(n => `<li>${n}</li>`).join('') 
                 : '<li>Not following anyone.</li>';
-                
             document.getElementById('followersList').innerHTML = followers.length > 0 
                 ? followers.map(n => `<li>${n}</li>`).join('') 
                 : '<li>No followers yet.</li>';
@@ -529,7 +675,6 @@
                 document.getElementById('hostError').innerText = 'Please enter a room name.';
                 return;
             }
-
             const isPrivate = document.getElementById('hostPrivateCheck').checked;
             const code = document.getElementById('generatedCode').innerText;
             let peerId = isPrivate ? `yr_${sanitizeNick(roomName)}_${code}` : `yr_${sanitizeNick(roomName)}`;
@@ -598,7 +743,7 @@
 
         function registerPublicRoom(room) {
             if (isDirectory) {
-                activePublicRooms[room] = myNickname;
+                activePublicRooms.push({ room: room, host: myNickname, time: Date.now() });
                 return;
             }
             if (feedConn && feedConn.open) {
@@ -625,14 +770,12 @@
                 document.getElementById('joinError').innerText = 'Please enter the room name.';
                 return;
             }
-
             const isPrivate = document.getElementById('joinPrivateCheck').checked;
             const code = document.getElementById('joinCodeInput').value.trim().toUpperCase();
             if (isPrivate && !code) {
                 document.getElementById('joinError').innerText = 'Please enter the 4-character join code.';
                 return;
             }
-
             let targetId = isPrivate ? `yr_${sanitizeNick(roomName)}_${code}` : `yr_${sanitizeNick(roomName)}`;
 
             if (guestPeer) guestPeer.destroy();
@@ -643,9 +786,7 @@
 
             guestPeer.on('open', (id) => {
                 guestConn = guestPeer.connect(targetId, { metadata: { nick: myNickname } });
-                
                 guestConn.on('open', () => showChat(roomName));
-
                 guestConn.on('data', (data) => {
                     try {
                         const msgObj = JSON.parse(data);
@@ -653,12 +794,10 @@
                         else if (msgObj.type === 'system') appendMessage('System: ' + msgObj.text);
                     } catch (e) {}
                 });
-
                 guestConn.on('close', () => {
                     appendMessage('System: Disconnected from room.');
                     setTimeout(leaveRoom, 1000);
                 });
-
                 guestConn.on('error', (err) => {
                     document.getElementById('joinError').innerText = 'Connection error.';
                     setTimeout(leaveRoom, 1000);
@@ -675,23 +814,21 @@
             });
         }
 
-        // ---------- Directory Fetch ----------
+        // ---------- Directory Fetch (now newest rooms first) ----------
         function fetchPublicRooms() {
             const listEl = document.getElementById('publicRoomsList');
             listEl.innerHTML = '<li>Searching for public rooms...</li>';
 
             if (isDirectory) {
-                const rooms = Object.keys(activePublicRooms);
-                listEl.innerHTML = rooms.length > 0 
-                    ? rooms.map(r => `<li>${r} <button onclick="document.getElementById('joinRoomInput').value='${r}'; startJoin();">Join</button></li>`).join('')
+                const sorted = [...activePublicRooms].sort((a,b) => b.time - a.time);
+                listEl.innerHTML = sorted.length > 0 
+                    ? sorted.map(r => `<li>${r.room} <button onclick="document.getElementById('joinRoomInput').value='${r.room}'; startJoin();">Join</button></li>`).join('')
                     : '<li>No public rooms currently active.</li>';
                 return;
             }
 
             if (feedConn && feedConn.open) {
                 feedConn.send(JSON.stringify({ type: 'get_rooms' }));
-                
-                // Listen once for the room list
                 const tempHandler = (data) => {
                     try {
                         const msg = JSON.parse(data);
@@ -715,7 +852,6 @@
             const text = input.value.trim();
             if (!text) return;
             input.value = '';
-
             if (myRole === 'host') {
                 appendMessage('You: ' + text);
                 const msgObj = { type: 'chat', nick: myNickname, msg: text };
@@ -734,21 +870,21 @@
                 if (hostPeer) hostPeer.destroy();
                 hostPeer = null;
                 hostConnections = [];
-                if (isDirectory) delete activePublicRooms[roomName];
+                if (isDirectory) {
+                    activePublicRooms = activePublicRooms.filter(r => r.room !== roomName);
+                }
             } else if (myRole === 'guest') {
                 if (guestConn) guestConn.close();
                 if (guestPeer) guestPeer.destroy();
                 guestPeer = null;
                 guestConn = null;
             }
-
             myRole = null;
             roomName = null;
             showMain();
             document.getElementById('messages').textContent = '';
             document.getElementById('chatInput').disabled = true;
             document.getElementById('sendBtn').disabled = true;
-            
             document.getElementById('generatedCode').innerText = '';
             document.getElementById('hostPrivateCheck').checked = false;
             toggleHostCode();
