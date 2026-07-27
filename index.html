@@ -2,396 +2,750 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>YipYap! communications app</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YipYap Pro - Secure P2P Network</title>
     <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #1e1e2e;
+            --bg-secondary: #181825;
+            --bg-tertiary: #11111b;
+            --bg-floating: #313244;
+            --text-normal: #cdd6f4;
+            --text-muted: #a6adc8;
+            --text-link: #89b4fa;
+            --accent: #89b4fa;
+            --accent-hover: #74a0fc;
+            --danger: #f38ba8;
+            --success: #a6e3a1;
+            --border-color: #45475a;
+            --scrollbar-thumb: #45475a;
+            --scrollbar-track: #181825;
+        }
+
+        [data-theme="light"] {
+            --bg-primary: #eff1f5;
+            --bg-secondary: #e6e9ef;
+            --bg-tertiary: #dce0e8;
+            --bg-floating: #ffffff;
+            --text-normal: #4c4f69;
+            --text-muted: #6c6f85;
+            --text-link: #1e66f5;
+            --accent: #1e66f5;
+            --accent-hover: #0d54e4;
+            --danger: #d20f39;
+            --success: #40a02b;
+            --border-color: #bcc0cc;
+            --scrollbar-thumb: #bcc0cc;
+            --scrollbar-track: #e6e9ef;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-normal);
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+            font-size: 15px;
+        }
+
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+        ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+        /* Layout */
+        .sidebar {
+            width: 220px;
+            background-color: var(--bg-secondary);
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            border-right: 1px solid var(--border-color);
+        }
+        .sidebar-header {
+            padding: 15px 20px;
+            font-weight: 700;
+            font-size: 1.1rem;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .sidebar-nav { flex-grow: 1; padding: 15px 10px; overflow-y: auto; }
+        .nav-item {
+            padding: 10px 12px;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 0.95rem;
+            transition: background 0.2s, color 0.2s;
+            border-radius: 4px;
+            margin-bottom: 2px;
+            font-weight: 500;
+        }
+        .nav-item:hover { background-color: var(--bg-floating); color: var(--text-normal); }
+        .nav-item.active { background-color: var(--accent); color: #ffffff; }
+        
+        .sidebar-footer { padding: 12px 15px; border-top: 1px solid var(--border-color); display: flex; align-items: center; gap: 12px; background: var(--bg-tertiary); }
+        .user-avatar { width: 36px; height: 36px; border-radius: 50%; background-color: var(--accent); display: flex; align-items: center; justify-content: center; font-weight: bold; color: #ffffff; font-size: 1rem; }
+        .user-info { flex-grow: 1; overflow: hidden; }
+        .user-name { font-size: 0.9rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .user-status { font-size: 0.75rem; color: var(--success); }
+
+        .main-content { flex-grow: 1; display: flex; flex-direction: column; background-color: var(--bg-primary); }
+        .main-header { padding: 15px 25px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .main-header h2 { font-size: 1.2rem; font-weight: 600; }
+        .main-body { flex-grow: 1; overflow-y: auto; padding: 25px; }
+
+        /* Views */
+        .view { display: none; height: 100%; flex-direction: column; }
+        .view.active { display: flex; }
+
+        /* Auth */
+        .auth-wrapper { display: flex; align-items: center; justify-content: center; height: 100vh; width: 100vw; background: var(--bg-tertiary); position: absolute; z-index: 100; }
+        .auth-card { background: var(--bg-primary); padding: 40px; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.4); width: 420px; max-width: 90%; border: 1px solid var(--border-color); }
+        .auth-card h1 { text-align: center; margin-bottom: 10px; color: var(--accent); font-size: 1.8rem; }
+        .auth-card p.sub { text-align: center; color: var(--text-muted); margin-bottom: 30px; font-size: 0.95rem; }
+
+        /* Forms */
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 6px; font-size: 0.85rem; font-weight: 600; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.5px; }
+        input[type="text"], input[type="password"], input[type="email"] {
+            width: 100%; padding: 12px; background: var(--bg-secondary); border: 1px solid var(--border-color);
+            border-radius: 4px; color: var(--text-normal); font-size: 1rem; outline: none; transition: border 0.2s;
+        }
+        input:focus { border-color: var(--accent); }
+
+        .btn { padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; font-size: 0.95rem; font-weight: 600; transition: background 0.2s, opacity 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+        .btn-primary { background: var(--accent); color: #ffffff; width: 100%; }
+        .btn-primary:hover { background: var(--accent-hover); }
+        .btn-secondary { background: transparent; color: var(--text-muted); width: 100%; border: 1px solid var(--border-color); }
+        .btn-secondary:hover { color: var(--text-normal); border-color: var(--text-muted); }
+        .btn-danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+        .btn-danger:hover { background: var(--danger); color: #ffffff; }
+        .btn-small { padding: 5px 10px; font-size: 0.8rem; width: auto; }
+
+        /* Chat */
+        .chat-container { display: flex; flex-direction: column; height: 100%; }
+        .chat-history { flex-grow: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; }
+        .message-group { display: flex; gap: 15px; }
+        .msg-avatar { width: 40px; height: 40px; border-radius: 50%; background: var(--accent); display: flex; align-items: center; justify-content: center; color: #ffffff; font-weight: bold; flex-shrink: 0; font-size: 1rem; }
+        .msg-content { flex-grow: 1; }
+        .msg-header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 3px; }
+        .msg-author { font-weight: 600; color: var(--text-normal); }
+        .msg-time { font-size: 0.75rem; color: var(--text-muted); }
+        .msg-text { color: var(--text-normal); line-height: 1.5rem; word-wrap: break-word; }
+        .msg-system { color: var(--text-muted); font-style: italic; text-align: center; font-size: 0.85rem; padding: 5px 0; }
+        .chat-input-area { padding: 15px 20px; background: var(--bg-primary); border-top: 1px solid var(--border-color); display: flex; gap: 15px; }
+        .chat-input-area input { border-radius: 8px; }
+
+        /* Feed & Posts */
+        .post-composer { display: flex; gap: 15px; margin-bottom: 25px; background: var(--bg-secondary); padding: 15px; border-radius: 8px; border: 1px solid var(--border-color); }
+        .post-composer input { background: var(--bg-primary); }
+        
+        .post-card { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px; padding: 20px; margin-bottom: 15px; }
+        .post-main { display: flex; gap: 15px; }
+        .post-content { flex-grow: 1; }
+        .post-header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+        .post-author { font-weight: 700; color: var(--text-normal); }
+        .post-time { font-size: 0.75rem; color: var(--text-muted); }
+        .post-text { color: var(--text-normal); line-height: 1.6; margin-bottom: 15px; }
+        
+        .post-actions { display: flex; gap: 10px; border-top: 1px solid var(--border-color); padding-top: 10px; }
+        .action-btn { background: transparent; border: 1px solid var(--border-color); padding: 4px 10px; border-radius: 4px; color: var(--text-muted); cursor: pointer; font-size: 0.85rem; font-weight: 500; }
+        .action-btn:hover { border-color: var(--text-muted); color: var(--text-normal); }
+        .action-btn.active-like { border-color: var(--success); color: var(--success); }
+        .action-btn.active-dislike { border-color: var(--danger); color: var(--danger); }
+
+        .reply-section { margin-top: 15px; padding-left: 55px; display: flex; flex-direction: column; gap: 10px; }
+        .reply-card { background: var(--bg-tertiary); padding: 10px 15px; border-radius: 6px; border-left: 2px solid var(--border-color); }
+        .reply-header { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; }
+        .reply-author { font-weight: 600; font-size: 0.9rem; }
+        .reply-time { font-size: 0.7rem; color: var(--text-muted); }
+        .reply-text { font-size: 0.9rem; line-height: 1.4; }
+        .reply-input { display: flex; gap: 10px; margin-top: 5px; }
+        .reply-input input { padding: 8px; font-size: 0.9rem; }
+
+        /* Lists & Rooms */
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .card { background: var(--bg-secondary); padding: 20px; border-radius: 8px; border: 1px solid var(--border-color); }
+        .card h3 { margin-bottom: 15px; font-size: 1.1rem; }
+        
+        .list-item { background: var(--bg-tertiary); padding: 12px 15px; border-radius: 4px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; border: 1px solid transparent; }
+        .list-item:hover { border-color: var(--border-color); }
+
+        .theme-toggle { cursor: pointer; color: var(--text-muted); font-size: 1rem; background: none; border: none; padding: 5px; }
+        .theme-toggle:hover { color: var(--text-normal); }
+
+        .toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; }
+        .toast { background: var(--bg-floating); border: 1px solid var(--border-color); padding: 15px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); min-width: 280px; display: flex; gap: 10px; align-items: center; animation: slideIn 0.3s ease; border-left: 4px solid var(--accent); }
+        .toast.success { border-left-color: var(--success); }
+        .toast.error { border-left-color: var(--danger); }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+        .hidden { display: none !important; }
+        .text-muted { color: var(--text-muted); font-size: 0.85rem; }
+    </style>
 </head>
 <body>
-    <h1>YipYap! Group Chat</h1>
-    <p>P2P communications app</p>
 
-    <!-- Nickname Selection -->
-    <div id="nicknameArea">
-        <p id="nicknamePrompt">Choose a nickname:</p>
-        <input type="text" id="nicknameInput" placeholder="Your name">
-        <button id="nicknameBtn" onclick="setNickname()">Continue</button>
-        <button id="changeNickBtn" hidden onclick="resetNickname()">Change nickname</button>
-        <button id="skipBtn" onclick="skipSignIn()">Skip (Browse as Guest)</button>
-        <p id="nicknameError" style="color:red;"></p>
-    </div>
-
-    <!-- Main Menu -->
-    <div id="main" hidden>
-        <h3>Global Feed</h3>
-        <!-- DWIM interest indicator -->
-        <p id="interestDisplay" style="font-size:0.9em; color:#444;"></p>
-        <input type="text" id="postInput" placeholder="What's on your mind?" style="width: 300px;">
-        <button onclick="postMessage()">Post to Feed</button>
-        <div id="feedList" style="height: 200px; overflow-y: scroll; border: 1px solid black; margin-top: 10px; padding: 5px;"></div>
-        
-        <hr>
-        <h3>Menu</h3>
-        <button onclick="showHost()">Host Room</button>
-        <button onclick="showJoin()">Join Room</button>
-        <button id="profileBtn" onclick="showProfile()">My Profile & Followers</button>
-        <br><br>
-        <button onclick="resetNickname()" style="color:red;">Logout / Change Nickname</button>
-    </div>
-
-    <!-- Host Panel -->
-    <div id="hostPanel" hidden>
-        <h3>Host a Room</h3>
-        <p>Room name: <input type="text" id="hostRoomInput" placeholder="e.g. pizza"></p>
-        <p><input type="checkbox" id="hostPrivateCheck" onchange="toggleHostCode()"> Make room private (requires join code)</p>
-        <p id="hostCodeDisplay" hidden>Join Code: <b id="generatedCode"></b></p>
-        <button onclick="startHost()">Start Hosting</button>
-        <button onclick="showMain()">Back</button>
-        <p id="hostError" style="color:red;"></p>
-    </div>
-
-    <!-- Join Panel -->
-    <div id="joinPanel" hidden>
-        <h3>Join a Room</h3>
-        <p><input type="checkbox" id="joinPrivateCheck" onchange="toggleJoinCode()"> Joining private room</p>
-        <p>Room name: <input type="text" id="joinRoomInput" placeholder="e.g. pizza"></p>
-        <p id="joinCodeArea" hidden>Join Code: <input type="text" id="joinCodeInput" placeholder="AB12" maxlength="4"></p>
-        <button onclick="startJoin()">Join Room</button>
-        <button onclick="showMain()">Back</button>
-        <p id="joinError" style="color:red;"></p>
-        
-        <hr>
-        <h4>Public Rooms Directory</h4>
-        <button onclick="fetchPublicRooms()">Refresh List</button>
-        <ul id="publicRoomsList"><li>Click refresh to see active public rooms.</li></ul>
-    </div>
-
-    <!-- Profile Panel -->
-    <div id="profilePanel" hidden>
-        <h3>Profile: <span id="profileNickDisplay"></span></h3>
-        <p>Find and follow a user by nickname:</p>
-        <input type="text" id="followInput" placeholder="Enter exact nickname">
-        <button onclick="followUser()">Follow</button>
-        <p id="followError" style="color:red;"></p>
-        
-        <h4>Following</h4>
-        <ul id="followingList"><li>Not following anyone.</li></ul>
-        
-        <h4>Followers</h4>
-        <ul id="followersList"><li>No followers yet.</li></ul>
-
-        <h4>Direct Messages</h4>
-        <div id="dmArea" style="border:1px solid #000; height:100px; overflow-y:scroll; margin-bottom:10px;">
-            <p id="dmMessages" style="white-space: pre-wrap;"></p>
+    <!-- Auth Screen -->
+    <div id="authScreen" class="auth-wrapper">
+        <div class="auth-card">
+            <h1>YipYap Pro</h1>
+            <p class="sub">Secure, encrypted P2P communications.</p>
+            
+            <div id="loginForm">
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" id="loginEmail" placeholder="you@example.com">
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="loginPassword" placeholder="••••••••">
+                </div>
+                <button class="btn btn-primary" onclick="login()">Login</button>
+                <div style="text-align:center; margin: 15px 0; color:var(--text-muted); font-size:0.8rem;">OR</div>
+                <button class="btn btn-secondary" onclick="toggleAuthView()">Create Account</button>
+                <p id="loginError" style="color: var(--danger); font-size: 0.9rem; margin-top: 15px; text-align: center;"></p>
+            </div>
+            
+            <div id="registerForm" class="hidden">
+                <div class="form-group">
+                    <label>Nickname</label>
+                    <input type="text" id="regNick" placeholder="YourName">
+                </div>
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" id="regEmail" placeholder="you@example.com">
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="regPassword" placeholder="Minimum 6 characters">
+                </div>
+                <button class="btn btn-primary" onclick="register()">Register</button>
+                <div style="text-align:center; margin: 15px 0; color:var(--text-muted); font-size:0.8rem;">OR</div>
+                <button class="btn btn-secondary" onclick="toggleAuthView()">Back to Login</button>
+                <p id="regError" style="color: var(--danger); font-size: 0.9rem; margin-top: 15px; text-align: center;"></p>
+            </div>
         </div>
-        <input type="text" id="dmTargetInput" placeholder="Nickname to DM">
-        <input type="text" id="dmInput" placeholder="Type DM...">
-        <button onclick="sendDM()">Send DM</button>
-        <br><br>
-        <button onclick="showMain()">Back to Main Menu</button>
     </div>
 
-    <!-- Chat Area -->
-    <div id="chatArea" hidden>
-        <p><b id="roomLabel"></b> | You are: <b id="myNickDisplay"></b></p>
-        <pre id="messages" style="height: 200px; overflow-y: scroll; border: 1px solid black;"></pre>
-        <input type="text" id="chatInput" placeholder="Type a message..." disabled>
-        <button id="sendBtn" disabled onclick="sendChat()">Send</button>
-        <br><br>
-        <button onclick="leaveRoom()">Leave Room</button>
+    <!-- Main App -->
+    <div class="sidebar" id="sidebar" hidden>
+        <div class="sidebar-header">
+            YipYap Pro
+            <button class="theme-toggle" onclick="toggleTheme()" title="Toggle Theme">Theme</button>
+        </div>
+        <div class="sidebar-nav">
+            <div class="nav-item active" data-view="feed" onclick="switchView('feed')">Feed</div>
+            <div class="nav-item" data-view="rooms" onclick="switchView('rooms')">Rooms</div>
+            <div class="nav-item" data-view="profile" onclick="switchView('profile')">Profile & Messages</div>
+            <div class="nav-item" data-view="myposts" onclick="switchView('myposts')">My Posts</div>
+            <div class="nav-item" data-view="chat" id="chatNavItem" hidden onclick="switchView('chat')">Active Room</div>
+        </div>
+        <div class="sidebar-footer">
+            <div class="user-avatar" id="userAvatar">U</div>
+            <div class="user-info">
+                <div class="user-name" id="userName">User</div>
+                <div class="user-status">Encrypted & Online</div>
+            </div>
+            <button class="btn btn-danger btn-small" onclick="logout()">Logout</button>
+        </div>
     </div>
+
+    <div class="main-content" id="mainContent" hidden>
+        <!-- Feed View -->
+        <div class="view active" id="view-feed">
+            <div class="main-header">
+                <h2>Feed</h2>
+                <span class="text-muted">Algorithmically tailored to your interests</span>
+            </div>
+            <div class="main-body" style="display:flex; flex-direction:column; height:100%; max-width: 800px; margin: 0 auto; width: 100%;">
+                <div class="post-composer">
+                    <input type="text" id="postInput" placeholder="Share something securely..." style="flex-grow:1;">
+                    <button class="btn btn-primary" style="width:auto; padding: 0 25px;" onclick="postMessage()">Post</button>
+                </div>
+                <div id="feedList" style="flex-grow:1; overflow-y:auto;"></div>
+            </div>
+        </div>
+
+        <!-- Rooms View -->
+        <div class="view" id="view-rooms">
+            <div class="main-header"><h2>Chat Rooms</h2></div>
+            <div class="main-body" style="max-width: 1000px; margin: 0 auto; width: 100%;">
+                <div class="grid-2">
+                    <div class="card">
+                        <h3>Host a Room</h3>
+                        <div class="form-group">
+                            <label>Room Name</label>
+                            <input type="text" id="hostRoomInput" placeholder="e.g. dev-team">
+                        </div>
+                        <div class="form-group" style="display:flex; align-items:center; gap:10px;">
+                            <input type="checkbox" id="hostPrivateCheck" onchange="toggleHostCode()">
+                            <label for="hostPrivateCheck" style="margin:0; text-transform:none; letter-spacing:0;">Private (Require Password/Code)</label>
+                        </div>
+                        <div class="form-group hidden" id="hostCodeDisplay">
+                            <label>Room Join Code</label>
+                            <input type="text" id="generatedCode" readonly style="cursor:not-allowed;">
+                        </div>
+                        <button class="btn btn-primary" onclick="startHost()">Start Hosting</button>
+                        <p id="hostError" style="color:var(--danger); font-size:0.9rem; margin-top:10px;"></p>
+                    </div>
+
+                    <div class="card">
+                        <h3>Join a Room</h3>
+                        <div class="form-group">
+                            <label>Room Name</label>
+                            <input type="text" id="joinRoomInput" placeholder="e.g. dev-team">
+                        </div>
+                        <div class="form-group hidden" id="joinCodeArea">
+                            <label>Room Password/Code</label>
+                            <input type="text" id="joinCodeInput" placeholder="AB12">
+                        </div>
+                        <div class="form-group" style="display:flex; align-items:center; gap:10px;">
+                            <input type="checkbox" id="joinPrivateCheck" onchange="toggleJoinCode()">
+                            <label for="joinPrivateCheck" style="margin:0; text-transform:none; letter-spacing:0;">Joining private room</label>
+                        </div>
+                        <button class="btn btn-primary" onclick="startJoin()">Join</button>
+                        <p id="joinError" style="color:var(--danger); font-size:0.9rem; margin-top:10px;"></p>
+                    </div>
+                </div>
+                
+                <hr style="border:none; border-top:1px solid var(--border-color); margin:30px 0;">
+                <h3>Public Directory</h3>
+                <button class="btn btn-secondary btn-small" onclick="fetchPublicRooms()" style="margin-bottom:15px;">Refresh List</button>
+                <div id="publicRoomsList" style="display:grid; grid-template-columns:1fr 1fr; gap:10px;"></div>
+            </div>
+        </div>
+
+        <!-- Profile View -->
+        <div class="view" id="view-profile">
+            <div class="main-header"><h2>Profile & Direct Messages</h2></div>
+            <div class="main-body" style="max-width: 1000px; margin: 0 auto; width: 100%;">
+                <div class="grid-2">
+                    <div class="card">
+                        <h3>Connections</h3>
+                        <div class="form-group">
+                            <label>Follow User by Email</label>
+                            <input type="email" id="followInput" placeholder="user@example.com">
+                            <button class="btn btn-primary btn-small" style="margin-top:10px;" onclick="followUser()">Follow</button>
+                            <p id="followError" style="color:var(--danger); font-size:0.9rem; margin-top:5px;"></p>
+                        </div>
+                        <h4 style="margin-top:20px; margin-bottom:10px;">Following</h4>
+                        <ul id="followingList" style="list-style:none;"></ul>
+                        <h4 style="margin-top:20px; margin-bottom:10px;">Followers</h4>
+                        <ul id="followersList" style="list-style:none;"></ul>
+                    </div>
+
+                    <div class="card" style="display:flex; flex-direction:column;">
+                        <h3>Direct Messages (Encrypted)</h3>
+                        <div style="flex-grow:1; background:var(--bg-tertiary); border-radius:6px; padding:15px; overflow-y:auto; margin-bottom:15px; min-height: 200px;" id="dmArea">
+                            <p id="dmMessages" style="white-space: pre-wrap; font-family: monospace; font-size: 0.9rem; color: var(--text-muted);">No messages yet.</p>
+                        </div>
+                        <input type="email" id="dmTargetInput" placeholder="Recipient email" style="margin-bottom:10px;">
+                        <div style="display:flex; gap:10px;">
+                            <input type="text" id="dmInput" placeholder="Type secure message...">
+                            <button class="btn btn-primary" onclick="sendDM()">Send</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- My Posts View -->
+        <div class="view" id="view-myposts">
+            <div class="main-header">
+                <h2>My Local Posts</h2>
+                <span class="text-muted">Stored securely on your device</span>
+            </div>
+            <div class="main-body" id="myPostsList" style="max-width: 800px; margin: 0 auto; width: 100%;"></div>
+        </div>
+
+        <!-- Chat View -->
+        <div class="view" id="view-chat">
+            <div class="main-header">
+                <h2 id="roomLabel">Room</h2>
+                <button class="btn btn-danger btn-small" onclick="leaveRoom()">Leave Room</button>
+            </div>
+            <div class="chat-container">
+                <div class="chat-history" id="messages"></div>
+                <div class="chat-input-area">
+                    <input type="text" id="chatInput" placeholder="Type an encrypted message...">
+                    <button class="btn btn-primary" style="width:auto; padding: 0 25px;" onclick="sendChat()">Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast-container" id="toastContainer"></div>
 
     <script>
-        // ---------- Globals ----------
-        let myNickname = null;
-        let myPeerId = null; 
-        let isGuest = false;
-        
-        // Chat peers
-        let hostPeer = null;
-        let guestPeer = null;
-        let guestConn = null;
-        let hostConnections = []; 
-        let myRole = null; 
-        let roomName = null;
-
-        // Profile & DM peers
-        let profilePeer = null;
-        let followConns = {}; 
-
-        // Background peer (Feed & Directory)
-        let backgroundPeer = null;
-        let isDirectory = false;
-        let activePublicRooms = [];   // now an array of { room, host, time }
-        let activeFeedConns = [];
-        let globalFeed = [];         // Newest at index 0 (for DWIM scoring, not display order)
-        let feedConn = null;
-
-        const STORAGE_KEY_NICK = 'yipyap_nickname';
-        const STORAGE_KEY_FOLLOWING = 'yipyap_following';
-        const STORAGE_KEY_FOLLOWERS = 'yipyap_followers';
-        const DIR_ID = 'yipyap-directory-v1';
-
-        // ---------- DWIM Algorithm State ----------
-        const DWIM_TOPICS = ['tech', 'sports', 'food'];
-        const DWIM_KEYWORDS = {
-            tech: ['ai', 'computer', 'code', 'robot', 'technology', 'software', 'programming', 'machine learning'],
-            sports: ['football', 'soccer', 'basketball', 'game', 'athlete', 'match', 'goal', 'championship'],
-            food: ['recipe', 'cook', 'restaurant', 'food', 'delicious', 'meal', 'chef', 'cuisine']
-        };
-        let dwimPrior = [1/3, 1/3, 1/3];
-        let dwimPosterior = [1/3, 1/3, 1/3];
-        let dwimRecentTopics = [];
-        let dwimUtilityWeights = { engagement: 0.6, longTermValue: 0.3, diversity: 0.1 };
-
-        function loadDwimPrior() {
-            const saved = localStorage.getItem('yipyap_dwim_prior');
-            if (saved) {
-                try {
-                    const arr = JSON.parse(saved);
-                    if (Array.isArray(arr) && arr.length === 3) dwimPrior = arr.map(v => Math.max(0.01, v));
-                } catch(e){}
-            }
-        }
-        function saveDwimPrior() {
-            localStorage.setItem('yipyap_dwim_prior', JSON.stringify(dwimPrior));
-        }
-        loadDwimPrior();
-
-        function dwimLikelihood(text) {
-            if (!text) return null;
-            const lower = text.toLowerCase();
-            const scores = DWIM_TOPICS.map(topic => {
-                const words = DWIM_KEYWORDS[topic];
-                let score = 0;
-                words.forEach(word => { if (lower.includes(word)) score += 1; });
-                return score + 0.1;
-            });
-            const total = scores.reduce((a,b)=>a+b, 0);
-            return scores.map(v => v / total);
+        // ---------- Web Crypto Helpers ----------
+        async function hashPassword(password) {
+            const enc = new TextEncoder();
+            const hash = await crypto.subtle.digest('SHA-256', enc.encode(password));
+            return btoa(String.fromCharCode(...new Uint8Array(hash)));
         }
 
-        function dwimUpdatePosterior(likelihood) {
-            if (!likelihood) return;
-            const unnorm = dwimPrior.map((p,i) => p * likelihood[i]);
-            const sum = unnorm.reduce((a,b)=>a+b, 1e-9);
-            dwimPosterior = unnorm.map(v => v / sum);
+        async function deriveKey(secret) {
+            const enc = new TextEncoder();
+            const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'PBKDF2' }, false, ['deriveKey']);
+            return crypto.subtle.deriveKey(
+                { name: 'PBKDF2', salt: enc.encode('yipyap_salt'), iterations: 1000, hash: 'SHA-256' },
+                keyMaterial,
+                { name: 'AES-GCM', length: 256 },
+                true,
+                ['encrypt', 'decrypt']
+            );
         }
 
-        function dwimEntropy() {
-            return -dwimPosterior.reduce((s, p) => s + (p>0 ? p*Math.log(p) : 0), 0);
+        async function encryptMsg(msg, key) {
+            const iv = crypto.getRandomValues(new Uint8Array(12));
+            const enc = new TextEncoder();
+            const cipher = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(msg));
+            return btoa(String.fromCharCode(...iv, ...new Uint8Array(cipher)));
         }
 
-        function dwimCheckClarification() {
-            const ent = dwimEntropy();
-            if (ent > 0.8 && dwimPosterior.some(p => p > 0.01 && p < 0.6)) {
-                const topIdx = dwimPosterior.indexOf(Math.max(...dwimPosterior));
-                const others = DWIM_TOPICS.filter((_, i) => i !== topIdx);
-                let secondIdx = 0;
-                let max2 = -1;
-                dwimPosterior.forEach((p, i) => { if (i !== topIdx && p > max2) { max2 = p; secondIdx = i; } });
-                const opt1 = DWIM_TOPICS[topIdx];
-                const opt2 = DWIM_TOPICS[secondIdx];
-                const answer = confirm("DWIM: I'm unsure about your interests. Which do you prefer more?\n" + opt1 + "  or  " + opt2 + "?");
-                if (answer !== null) {
-                    const chosen = answer ? opt1 : opt2;
-                    const idx = DWIM_TOPICS.indexOf(chosen);
-                    const newPost = [0.05, 0.05, 0.05];
-                    newPost[idx] = 0.9;
-                    dwimPosterior = newPost;
-                    dwimPrior = dwimPrior.map((p,i) => i===idx ? p+0.2*(1-p) : p-0.2*p);
-                    dwimPrior = dwimPrior.map(v => Math.max(0.01, v));
-                    const psum = dwimPrior.reduce((a,b)=>a+b, 1e-9);
-                    dwimPrior = dwimPrior.map(v => v/psum);
-                    saveDwimPrior();
-                    updateDwimDisplay();
-                }
-            }
+        async function decryptMsg(cipher, key) {
+            try {
+                const arr = Uint8Array.from(atob(cipher), c => c.charCodeAt(0));
+                const iv = arr.slice(0, 12);
+                const data = arr.slice(12);
+                const dec = new TextDecoder();
+                return dec.decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data));
+            } catch (e) { return "[Decryption Error]"; }
         }
 
-        function dwimClassifyPost(text) {
-            const lower = text.toLowerCase();
-            const scores = DWIM_TOPICS.map(topic => {
-                const words = DWIM_KEYWORDS[topic];
-                let score = 0;
-                words.forEach(w => { if (lower.includes(w)) score += 1; });
-                return score;
-            });
-            const total = scores.reduce((a,b)=>a+b, 1e-9);
-            return scores.map(v => v / total);
+        function escapeHtml(unsafe) {
+            if(!unsafe) return "";
+            return unsafe.toString()
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
         }
 
-        function dwimScorePost(post) {
-            const topicProbs = dwimClassifyPost(post.text);
-            const engagement = topicProbs.reduce((sum, p, i) => sum + p * dwimPosterior[i], 0);
-            const ltv = Math.min(1, post.text.length / 100);
-            const recentCount = dwimRecentTopics.filter(t => {
-                const idx = topicProbs.indexOf(Math.max(...topicProbs));
-                return DWIM_TOPICS[idx] === t;
-            }).length;
-            const diversity = 1 / (1 + recentCount);
-            return dwimUtilityWeights.engagement * engagement + dwimUtilityWeights.longTermValue * ltv + dwimUtilityWeights.diversity * diversity;
+        // ---------- Local DB & Auth ----------
+        const DB_KEY = 'yipyap_pro_db_v2';
+        function getDB() { 
+            try { return JSON.parse(localStorage.getItem(DB_KEY)) || { users: {}, session: null, following: [], followers: [], myPosts: [], feedCache: [], interestProfile: {}, likedPosts: [], dislikedPosts: [] }; } 
+            catch { return { users: {}, session: null, following: [], followers: [], myPosts: [], feedCache: [], interestProfile: {}, likedPosts: [], dislikedPosts: [] }; }
         }
+        function saveDB(db) { localStorage.setItem(DB_KEY, JSON.stringify(db)); }
 
-        function updateDwimDisplay() {
-            const display = document.getElementById('interestDisplay');
-            if (!display) return;
-            const maxTopic = DWIM_TOPICS[dwimPosterior.indexOf(Math.max(...dwimPosterior))];
-            display.textContent = '🧠 Inferred interest: ' + maxTopic + ' (score: ' + dwimPosterior[dwimPosterior.indexOf(Math.max(...dwimPosterior))].toFixed(2) + ')';
-        }
+        let currentUser = null;
+        let myPeerId = null;
 
-        // ---------- Storage Helpers ----------
-        function sanitizeNick(nick) {
-            return nick.replace(/[^a-zA-Z0-9_]/g, '').toLowerCase();
-        }
-
-        function loadJSON(key, fallback) {
-            try { return JSON.parse(localStorage.getItem(key)) || fallback; }
-            catch { return fallback; }
-        }
-
-        function saveJSON(key, data) {
-            localStorage.setItem(key, JSON.stringify(data));
-        }
-
-        // ---------- Nickname ----------
-        function showNicknameUI() {
-            const saved = localStorage.getItem(STORAGE_KEY_NICK);
-            const inputEl = document.getElementById('nicknameInput');
-            const btnEl = document.getElementById('nicknameBtn');
-            const changeBtn = document.getElementById('changeNickBtn');
-            const promptEl = document.getElementById('nicknamePrompt');
-            const errorEl = document.getElementById('nicknameError');
-            
-            errorEl.innerText = '';
-            inputEl.hidden = false;
-            
-            if (saved) {
-                promptEl.innerText = 'Welcome back, ' + saved + '!';
-                inputEl.value = saved;
-                btnEl.innerText = 'Continue as ' + saved;
-                changeBtn.hidden = false;
-            } else {
-                promptEl.innerText = 'Choose a nickname:';
-                inputEl.value = '';
-                btnEl.innerText = 'Continue';
-                changeBtn.hidden = true;
-            }
-        }
-
-        function setNickname() {
-            let name = document.getElementById('nicknameInput').value.trim();
-            if (!name) {
-                document.getElementById('nicknameError').innerText = 'Please enter a nickname.';
+        async function register() {
+            const nick = document.getElementById('regNick').value.trim();
+            const email = document.getElementById('regEmail').value.trim().toLowerCase();
+            const pass = document.getElementById('regPassword').value;
+            if(!nick || !email || pass.length < 6) {
+                document.getElementById('regError').innerText = "Fill all fields. Password min 6 chars.";
                 return;
             }
-            name = name.replace(/\s/g, '').substring(0, 20);
-            if (!name) {
-                document.getElementById('nicknameError').innerText = 'Invalid nickname.';
+            const db = getDB();
+            if(Object.values(db.users).some(u => u.email === email)) {
+                document.getElementById('regError').innerText = "Email already registered.";
                 return;
             }
+            const passHash = await hashPassword(pass);
+            const user = { id: 'yp_' + Date.now(), nick, email, passHash };
+            db.users[user.id] = user;
+            db.session = user.id;
+            saveDB(db);
+            initApp(user);
+        }
 
-            myNickname = name;
-            myPeerId = sanitizeNick(name);
-            isGuest = false;
-            localStorage.setItem(STORAGE_KEY_NICK, name);
+        async function login() {
+            const email = document.getElementById('loginEmail').value.trim().toLowerCase();
+            const pass = document.getElementById('loginPassword').value;
+            const db = getDB();
+            const user = Object.values(db.users).find(u => u.email === email);
+            if(!user) { document.getElementById('loginError').innerText = "User not found."; return; }
+            const passHash = await hashPassword(pass);
+            if(user.passHash !== passHash) { document.getElementById('loginError').innerText = "Incorrect password."; return; }
+            db.session = user.id;
+            saveDB(db);
+            initApp(user);
+        }
+
+        function logout() {
+            const db = getDB();
+            db.session = null;
+            saveDB(db);
+            if(hostPeer) hostPeer.destroy();
+            if(guestPeer) guestPeer.destroy();
+            if(backgroundPeer) backgroundPeer.destroy();
+            location.reload();
+        }
+
+        function toggleAuthView() {
+            document.getElementById('loginForm').classList.toggle('hidden');
+            document.getElementById('registerForm').classList.toggle('hidden');
+        }
+
+        function initApp(user) {
+            currentUser = user;
+            myPeerId = 'yp_' + user.email.replace(/[^a-zA-Z0-9]/g, ''); // Deterministic ID based on email
             
-            document.getElementById('nicknameArea').hidden = true;
-            document.getElementById('main').hidden = false;
-            document.getElementById('profileBtn').hidden = false;
+            document.getElementById('authScreen').classList.add('hidden');
+            document.getElementById('sidebar').hidden = false;
+            document.getElementById('mainContent').hidden = false;
             
+            document.getElementById('userName').innerText = user.nick;
+            document.getElementById('userAvatar').innerText = user.nick.charAt(0).toUpperCase();
+            
+            if (Notification.permission !== 'granted') Notification.requestPermission();
             initProfilePeer();
             initBackgroundPeer();
-            updateDwimDisplay();
-            dwimCheckClarification();
-        }
-
-        function skipSignIn() {
-            myNickname = "Guest" + Math.floor(Math.random() * 10000);
-            myPeerId = null;
-            isGuest = true;
-            
-            document.getElementById('nicknameArea').hidden = true;
-            document.getElementById('main').hidden = false;
-            document.getElementById('profileBtn').hidden = true;
-            
-            initBackgroundPeer();
-            dwimPrior = [1/3, 1/3, 1/3];
-            dwimPosterior = [1/3, 1/3, 1/3];
-            updateDwimDisplay();
-        }
-
-        function resetNickname() {
-            if (profilePeer) { profilePeer.destroy(); profilePeer = null; }
-            if (backgroundPeer) { backgroundPeer.destroy(); backgroundPeer = null; }
-            if (hostPeer || guestPeer) { leaveRoom(); }
-            
-            localStorage.removeItem(STORAGE_KEY_NICK);
-            myNickname = null;
-            myPeerId = null;
-            isGuest = false;
-            globalFeed = [];
-            activeFeedConns = [];
-            activePublicRooms = [];
-            
-            document.getElementById('main').hidden = true;
-            document.getElementById('profilePanel').hidden = true;
-            document.getElementById('nicknameArea').hidden = false;
-            showNicknameUI();
-        }
-
-        // ---------- UI Navigation ----------
-        function showMain() {
-            hide('hostPanel'); hide('joinPanel'); hide('chatArea'); hide('profilePanel');
-            show('main');
-        }
-
-        function showHost() {
-            hide('main'); hide('joinPanel'); hide('chatArea'); hide('profilePanel');
-            show('hostPanel');
-            document.getElementById('hostError').innerText = '';
-        }
-
-        function showJoin() {
-            hide('main'); hide('hostPanel'); hide('chatArea'); hide('profilePanel');
-            show('joinPanel');
-            document.getElementById('joinError').innerText = '';
-        }
-
-        function showProfile() {
-            if (isGuest) return;
-            hide('main'); hide('hostPanel'); hide('joinPanel'); hide('chatArea');
-            show('profilePanel');
-            document.getElementById('profileNickDisplay').innerText = myNickname;
             renderProfileLists();
+            renderMyPosts();
+            applyTheme();
         }
 
-        function showChat(room) {
-            hide('hostPanel'); hide('joinPanel'); hide('main'); hide('profilePanel');
-            show('chatArea');
-            document.getElementById('roomLabel').innerText = 'Room: ' + room;
-            document.getElementById('myNickDisplay').innerText = myNickname;
-            document.getElementById('messages').textContent = '';
-            document.getElementById('chatInput').disabled = false;
-            document.getElementById('sendBtn').disabled = false;
-            document.getElementById('chatInput').focus();
+        // ---------- UI Helpers ----------
+        function switchView(viewName) {
+            document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+            document.getElementById('view-' + viewName).classList.add('active');
+            document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+            document.querySelector(`.nav-item[data-view="${viewName}"]`)?.classList.add('active');
         }
 
-        function hide(id) { document.getElementById(id).hidden = true; }
-        function show(id) { document.getElementById(id).hidden = false; }
-
-        function appendMessage(text) {
-            const pre = document.getElementById('messages');
-            pre.textContent += text + '\n';
-            pre.scrollTop = pre.scrollHeight;
+        function toggleTheme() {
+            const db = getDB();
+            db.theme = db.theme === 'light' ? 'dark' : 'light';
+            saveDB(db);
+            applyTheme();
+        }
+        function applyTheme() {
+            const db = getDB();
+            document.body.setAttribute('data-theme', db.theme || 'dark');
         }
 
-        // ---------- Background Peer (Feed & Directory) ----------
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.innerText = message;
+            container.appendChild(toast);
+            setTimeout(() => toast.remove(), 4000);
+        }
+
+        function notify(title, body) {
+            if (Notification.permission === 'granted') new Notification(title, { body });
+            else showToast(title + ": " + body, 'info');
+        }
+
+        // ---------- Feed Algorithm (DWIM) ----------
+        function tokenize(text) {
+            return text.toLowerCase().match(/\b(\w+)\b/g) || [];
+        }
+
+        function updateInterestProfile(text, weight) {
+            const db = getDB();
+            if(!db.interestProfile) db.interestProfile = {};
+            const words = tokenize(text);
+            words.forEach(word => {
+                if(word.length < 3) return; // ignore short words
+                if(!db.interestProfile[word]) db.interestProfile[word] = 0;
+                db.interestProfile[word] += weight;
+                // Decay to prevent infinite growth
+                if(db.interestProfile[word] > 10) db.interestProfile[word] = 10;
+                if(db.interestProfile[word] < -5) db.interestProfile[word] = -5;
+            });
+            saveDB(db);
+        }
+
+        function scorePost(post) {
+            const db = getDB();
+            const profile = db.interestProfile || {};
+            const words = tokenize(post.text + " " + post.nick);
+            let score = 0;
+
+            words.forEach(word => {
+                if(profile[word]) score += profile[word];
+            });
+
+            // Boost score by engagement
+            if(post.replies && post.replies.length > 0) score += post.replies.length * 0.5;
+            
+            // Time decay: older posts lose points slightly
+            const hoursOld = (Date.now() - post.time) / (1000 * 60 * 60);
+            score -= hoursOld * 0.1;
+
+            return score;
+        }
+
+        function renderFeed() {
+            const el = document.getElementById('feedList');
+            if (!el) return;
+            const db = getDB();
+            
+            // Sort by algorithmic score
+            const sortedFeed = [...globalFeed].sort((a, b) => scorePost(b) - scorePost(a));
+
+            if (sortedFeed.length === 0) { 
+                el.innerHTML = '<div class="text-muted" style="text-align:center; padding:40px;">No posts yet. Be the first to share something.</div>'; 
+                return; 
+            }
+
+            el.innerHTML = sortedFeed.map(p => {
+                const liked = db.likedPosts.includes(p.id) ? 'active-like' : '';
+                const disliked = db.dislikedPosts.includes(p.id) ? 'active-dislike' : '';
+                const repliesHtml = (p.replies || []).map(r => `
+                    <div class="reply-card">
+                        <div class="reply-header">
+                            <span class="reply-author">${escapeHtml(r.nick)}</span>
+                            <span class="reply-time">${new Date(r.time).toLocaleTimeString()}</span>
+                        </div>
+                        <div class="reply-text">${escapeHtml(r.text)}</div>
+                    </div>
+                `).join('');
+
+                return `
+                    <div class="post-card">
+                        <div class="post-main">
+                            <div class="msg-avatar">${escapeHtml(p.nick.charAt(0).toUpperCase())}</div>
+                            <div class="post-content">
+                                <div class="post-header">
+                                    <span class="post-author">${escapeHtml(p.nick)}</span>
+                                    <span class="post-time">${new Date(p.time).toLocaleString()}</span>
+                                </div>
+                                <div class="post-text">${escapeHtml(p.text)}</div>
+                                <div class="post-actions">
+                                    <button class="action-btn ${liked}" onclick="handleInteraction('${p.id}', 'like')">👍 Like</button>
+                                    <button class="action-btn ${disliked}" onclick="handleInteraction('${p.id}', 'dislike')">👎 Dislike</button>
+                                    <button class="action-btn" onclick="toggleReplyInput('${p.id}')">Reply</button>
+                                </div>
+                                <div class="reply-section">
+                                    ${repliesHtml}
+                                    <div class="reply-input hidden" id="replyInput_${p.id}">
+                                        <input type="text" id="replyText_${p.id}" placeholder="Type your reply..." onkeydown="if(event.key==='Enter') sendReply('${p.id}')">
+                                        <button class="btn btn-primary btn-small" onclick="sendReply('${p.id}')">Send</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function handleInteraction(postId, type) {
+            const db = getDB();
+            const post = globalFeed.find(p => p.id == postId);
+            if(!post) return;
+
+            // Toggle off if already clicked
+            if(type === 'like' && db.likedPosts.includes(postId)) {
+                db.likedPosts = db.likedPosts.filter(id => id != postId);
+                updateInterestProfile(post.text, -1); // Revert interest
+            } 
+            // Toggle off if already disliked
+            else if(type === 'dislike' && db.dislikedPosts.includes(postId)) {
+                db.dislikedPosts = db.dislikedPosts.filter(id => id != postId);
+                updateInterestProfile(post.text, 1); // Revert penalty
+            } 
+            // Apply new like
+            else if(type === 'like') {
+                db.likedPosts.push(postId);
+                updateInterestProfile(post.text, 2); // Strong positive signal
+                if(db.dislikedPosts.includes(postId)) {
+                    db.dislikedPosts = db.dislikedPosts.filter(id => id != postId);
+                    updateInterestProfile(post.text, 1); // Revert old penalty
+                }
+            } 
+            // Apply new dislike
+            else if(type === 'dislike') {
+                db.dislikedPosts.push(postId);
+                updateInterestProfile(post.text, -2); // Strong negative signal
+                if(db.likedPosts.includes(postId)) {
+                    db.likedPosts = db.likedPosts.filter(id => id != postId);
+                    updateInterestProfile(post.text, -2); // Revert old boost
+                }
+            }
+
+            saveDB(db);
+            renderFeed();
+        }
+
+        function toggleReplyInput(postId) {
+            document.getElementById('replyInput_' + postId).classList.toggle('hidden');
+        }
+
+        function sendReply(postId) {
+            const inputEl = document.getElementById('replyText_' + postId);
+            const text = inputEl.value.trim();
+            if(!text) return;
+
+            const post = globalFeed.find(p => p.id == postId);
+            if(!post) return;
+
+            if(!post.replies) post.replies = [];
+            const reply = { nick: currentUser.nick, text: text, time: Date.now() };
+            post.replies.push(reply);
+
+            // Update interest profile based on what you reply to
+            updateInterestProfile(post.text, 3); 
+            
+            inputEl.value = '';
+            document.getElementById('replyInput_' + postId).classList.add('hidden');
+            
+            // Sync reply to network
+            if (isDirectory) {
+                renderFeed();
+                activeFeedConns.forEach(c => { if (c.open) c.send(JSON.stringify({ type: 'update_post', post: post })); });
+            } else if (feedConn && feedConn.open) {
+                feedConn.send(JSON.stringify({ type: 'update_post', post: post }));
+            } else {
+                renderFeed();
+            }
+        }
+
+        function renderMyPosts() {
+            const el = document.getElementById('myPostsList');
+            const db = getDB();
+            if (db.myPosts.length === 0) { el.innerHTML = '<div class="text-muted" style="text-align:center; padding:40px;">You haven\'t posted anything yet.</div>'; return; }
+            el.innerHTML = db.myPosts.map(p => `
+                <div class="post-card">
+                    <div class="post-main">
+                        <div class="msg-avatar">${escapeHtml(p.nick.charAt(0).toUpperCase())}</div>
+                        <div class="post-content">
+                            <div class="post-header">
+                                <span class="post-author">${escapeHtml(p.nick)} (You)</span>
+                                <span class="post-time">${new Date(p.time).toLocaleString()}</span>
+                            </div>
+                            <div class="post-text">${escapeHtml(p.text)}</div>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // ---------- Background Peer (Directory & Feed) ----------
+        let backgroundPeer = null;
+        let isDirectory = false;
+        let activePublicRooms = [];
+        let activeFeedConns = [];
+        let globalFeed = [];
+        let feedConn = null;
+        const DIR_ID = 'yipyap-pro-dir-v2';
+
         function initBackgroundPeer() {
             backgroundPeer = new Peer(DIR_ID);
-            isDirectory = false;
+            const db = getDB();
+            globalFeed = db.feedCache || [];
 
             backgroundPeer.on('open', () => {
                 isDirectory = true;
-                renderPersonalisedFeed();
+                renderFeed();
             });
 
             backgroundPeer.on('connection', (conn) => {
@@ -403,31 +757,35 @@
                         const msg = JSON.parse(data);
                         if (msg.type === 'register_room') {
                             registeredRoom = msg.room;
-                            // Add room entry with timestamp (newest first later)
-                            activePublicRooms.push({ room: msg.room, host: msg.host, time: Date.now() });
+                            if(!activePublicRooms.some(r => r.room === msg.room)) {
+                                activePublicRooms.push({ room: msg.room, host: msg.host, time: Date.now() });
+                            }
                         } else if (msg.type === 'get_rooms') {
-                            // Send room names sorted by time descending
                             const sorted = [...activePublicRooms].sort((a,b) => b.time - a.time);
-                            conn.send(JSON.stringify({ type: 'room_list', rooms: sorted.map(r => r.room) }));
+                            conn.send(JSON.stringify({ type: 'room_list', rooms: sorted }));
                         } else if (msg.type === 'get_feed') {
                             conn.send(JSON.stringify({ type: 'feed_data', posts: globalFeed }));
                         } else if (msg.type === 'new_post') {
                             globalFeed.unshift(msg.post);
-                            if (globalFeed.length > 50) globalFeed.pop();
-                            renderPersonalisedFeed();
-                            activeFeedConns.forEach(c => {
-                                if (c !== conn && c.open) c.send(JSON.stringify({ type: 'new_post', post: msg.post }));
-                            });
+                            if (globalFeed.length > 100) globalFeed.pop();
+                            db.feedCache = globalFeed;
+                            saveDB(db);
+                            renderFeed();
+                            activeFeedConns.forEach(c => { if (c !== conn && c.open) c.send(JSON.stringify({ type: 'new_post', post: msg.post })); });
+                        } else if (msg.type === 'update_post') {
+                            const idx = globalFeed.findIndex(p => p.id == msg.post.id);
+                            if(idx !== -1) globalFeed[idx] = msg.post;
+                            db.feedCache = globalFeed;
+                            saveDB(db);
+                            renderFeed();
+                            activeFeedConns.forEach(c => { if (c !== conn && c.open) c.send(JSON.stringify({ type: 'update_post', post: msg.post })); });
                         }
                     } catch (e) {}
                 });
 
                 conn.on('close', () => {
                     activeFeedConns = activeFeedConns.filter(c => c !== conn);
-                    if (registeredRoom) {
-                        // Remove all entries for that room (in case of duplicates)
-                        activePublicRooms = activePublicRooms.filter(r => r.room !== registeredRoom);
-                    }
+                    if (registeredRoom) activePublicRooms = activePublicRooms.filter(r => r.room !== registeredRoom);
                 });
             });
 
@@ -436,9 +794,7 @@
                     isDirectory = false;
                     if (backgroundPeer) backgroundPeer.destroy();
                     backgroundPeer = new Peer();
-                    backgroundPeer.on('open', () => {
-                        connectToFeed();
-                    });
+                    backgroundPeer.on('open', () => { connectToFeed(); });
                 }
             });
         }
@@ -446,238 +802,178 @@
         function connectToFeed() {
             if (isDirectory) return;
             feedConn = backgroundPeer.connect(DIR_ID);
-            feedConn.on('open', () => {
-                feedConn.send(JSON.stringify({ type: 'get_feed' }));
-            });
+            feedConn.on('open', () => { feedConn.send(JSON.stringify({ type: 'get_feed' })); });
             feedConn.on('data', (data) => {
                 try {
                     const msg = JSON.parse(data);
-                    if (msg.type === 'feed_data') {
-                        globalFeed = msg.posts || [];
-                        renderPersonalisedFeed();
-                    } else if (msg.type === 'new_post') {
-                        globalFeed.unshift(msg.post);
-                        if (globalFeed.length > 50) globalFeed.pop();
-                        renderPersonalisedFeed();
+                    if (msg.type === 'feed_data') { 
+                        globalFeed = msg.posts || []; 
+                        const db = getDB();
+                        db.feedCache = globalFeed;
+                        saveDB(db);
+                        renderFeed(); 
+                    } 
+                    else if (msg.type === 'new_post') { 
+                        globalFeed.unshift(msg.post); 
+                        if (globalFeed.length > 100) globalFeed.pop();
+                        const db = getDB();
+                        db.feedCache = globalFeed;
+                        saveDB(db);
+                        renderFeed(); 
+                    }
+                    else if (msg.type === 'update_post') {
+                        const idx = globalFeed.findIndex(p => p.id == msg.post.id);
+                        if(idx !== -1) globalFeed[idx] = msg.post;
+                        const db = getDB();
+                        db.feedCache = globalFeed;
+                        saveDB(db);
+                        renderFeed(); 
                     }
                 } catch(e) {}
             });
-            feedConn.on('close', () => {
-                document.getElementById('feedList').innerHTML = '<p>Feed disconnected.</p>';
-            });
         }
 
-        // ---------- Post & Feed (with DWIM) ----------
         function postMessage() {
             const input = document.getElementById('postInput');
             const text = input.value.trim();
             if (!text) return;
-            const post = { nick: myNickname, text: text, time: Date.now() };
+            
+            const db = getDB();
+            const post = { id: Date.now(), nick: currentUser.nick, text: text, time: Date.now(), replies: [] };
             input.value = '';
 
-            // DWIM update from own post
-            const likelihood = dwimLikelihood(text);
-            if (likelihood) {
-                const bestIdx = likelihood.indexOf(Math.max(...likelihood));
-                const lr = 0.1;
-                let newPrior = dwimPrior.map((p, i) => i === bestIdx ? p + lr*(1-p) : p - lr*p);
-                newPrior = newPrior.map(v => Math.max(0.01, v));
-                const sum = newPrior.reduce((a,b)=>a+b, 1e-9);
-                dwimPrior = newPrior.map(v => v/sum);
-                saveDwimPrior();
-                dwimUpdatePosterior(likelihood);
-                updateDwimDisplay();
-            }
+            db.myPosts.unshift(post);
+            saveDB(db);
+            renderMyPosts();
+            updateInterestProfile(text, 2); // Boost own topics in algo
 
             if (isDirectory) {
                 globalFeed.unshift(post);
-                if (globalFeed.length > 50) globalFeed.pop();
-                renderPersonalisedFeed();
-                activeFeedConns.forEach(c => {
-                    if (c.open) c.send(JSON.stringify({ type: 'new_post', post: post }));
-                });
+                db.feedCache = globalFeed;
+                saveDB(db);
+                renderFeed();
+                activeFeedConns.forEach(c => { if (c.open) c.send(JSON.stringify({ type: 'new_post', post: post })); });
             } else if (feedConn && feedConn.open) {
                 feedConn.send(JSON.stringify({ type: 'new_post', post: post }));
             } else {
                 globalFeed.unshift(post);
-                if (globalFeed.length > 50) globalFeed.pop();
-                renderPersonalisedFeed();
+                renderFeed();
             }
-            dwimCheckClarification();
         }
 
-        function renderPersonalisedFeed() {
-            const el = document.getElementById('feedList');
-            if (!el) return;
-            const sorted = [...globalFeed].sort((a,b) => dwimScorePost(b) - dwimScorePost(a));
-            el.innerHTML = '';
-            if (sorted.length === 0) {
-                el.innerHTML = '<p>No posts yet. Be the first!</p>';
-                return;
-            }
-            dwimRecentTopics = [];
-            sorted.forEach(post => {
-                const topicProbs = dwimClassifyPost(post.text);
-                const bestIdx = topicProbs.indexOf(Math.max(...topicProbs));
-                const bestTopic = DWIM_TOPICS[bestIdx];
-                dwimRecentTopics.push(bestTopic);
-                if (dwimRecentTopics.length > 10) dwimRecentTopics.shift();
-                const div = document.createElement('div');
-                div.style.borderBottom = '1px solid #ccc';
-                div.style.padding = '5px';
-                const score = dwimScorePost(post).toFixed(2);
-                div.innerHTML = `<b>${post.nick}</b> <small>${new Date(post.time).toLocaleTimeString()}</small> (score: ${score})<br>${post.text}`;
-                const likeBtn = document.createElement('button');
-                likeBtn.textContent = '❤️ Like';
-                likeBtn.style.marginLeft = '10px';
-                likeBtn.onclick = function() {
-                    handleFeedLike(post);
-                };
-                div.appendChild(likeBtn);
-                el.appendChild(div);
-            });
-        }
+        // ---------- Profile Peer (Secure DMs) ----------
+        let profilePeer = null;
+        let followConns = {};
 
-        function handleFeedLike(post) {
-            const topicProbs = dwimClassifyPost(post.text);
-            const bestIdx = topicProbs.indexOf(Math.max(...topicProbs));
-            const lr = 0.15;
-            let newPrior = dwimPrior.map((p, i) => i === bestIdx ? p + lr*(1-p) : p - lr*p);
-            newPrior = newPrior.map(v => Math.max(0.01, v));
-            const sum = newPrior.reduce((a,b)=>a+b, 1e-9);
-            dwimPrior = newPrior.map(v => v/sum);
-            saveDwimPrior();
-            const likelihood = dwimLikelihood(post.text);
-            if (likelihood) dwimUpdatePosterior(likelihood);
-            updateDwimDisplay();
-            renderPersonalisedFeed();
-        }
-
-        // ---------- Profile Peer ----------
         function initProfilePeer() {
             if (profilePeer) profilePeer.destroy();
-            profilePeer = new Peer('yp_' + myPeerId);
-
-            profilePeer.on('open', () => {});
+            profilePeer = new Peer(myPeerId);
 
             profilePeer.on('connection', (conn) => {
-                conn.on('data', (data) => {
+                conn.on('data', async (data) => {
                     try {
                         const msg = JSON.parse(data);
                         if (msg.type === 'follow') {
-                            let followers = loadJSON(STORAGE_KEY_FOLLOWERS, []);
-                            if (!followers.includes(msg.nick)) {
-                                followers.push(msg.nick);
-                                saveJSON(STORAGE_KEY_FOLLOWERS, followers);
+                            let db = getDB();
+                            if (!db.followers.includes(msg.nick)) {
+                                db.followers.push(msg.nick);
+                                saveDB(db);
                                 renderProfileLists();
+                                notify("New Follower", msg.nick + " is now following you.");
                             }
-                            conn.send(JSON.stringify({ type: 'follow_ack', nick: myNickname }));
+                            conn.send(JSON.stringify({ type: 'follow_ack', nick: currentUser.nick }));
                         } else if (msg.type === 'dm') {
-                            appendDMMessage(msg.nick + ': ' + msg.text);
+                            const key = await deriveKey([msg.sender, currentUser.email].sort().join(''));
+                            const decrypted = await decryptMsg(msg.payload, key);
+                            appendDMMessage(msg.nick, decrypted);
+                            notify("New DM from " + msg.nick, decrypted);
                         }
                     } catch (e) {}
                 });
             });
-
-            profilePeer.on('error', (err) => {
-                if (err.type === 'unavailable-id') {
-                    alert('Your nickname is already in use. Please choose another.');
-                    resetNickname();
-                }
-            });
         }
 
-        function followUser() {
-            const target = document.getElementById('followInput').value.trim();
-            if (!target) return;
-            const targetId = 'yp_' + sanitizeNick(target);
-            document.getElementById('followError').innerText = '';
-            const conn = profilePeer.connect(targetId, { reliable: true });
+        async function followUser() {
+            const targetEmail = document.getElementById('followInput').value.trim().toLowerCase();
+            if(!targetEmail) return;
+            const targetId = 'yp_' + targetEmail.replace(/[^a-zA-Z0-9]/g, '');
+            const conn = profilePeer.connect(targetId);
+            
             conn.on('open', () => {
-                conn.send(JSON.stringify({ type: 'follow', nick: myNickname }));
-                let following = loadJSON(STORAGE_KEY_FOLLOWING, []);
-                if (!following.includes(target)) {
-                    following.push(target);
-                    saveJSON(STORAGE_KEY_FOLLOWING, following);
+                conn.send(JSON.stringify({ type: 'follow', nick: currentUser.nick }));
+                let db = getDB();
+                if(!db.following.includes(targetEmail)) {
+                    db.following.push(targetEmail);
+                    saveDB(db);
+                    renderProfileLists();
                 }
-                followConns[target] = conn;
-                renderProfileLists();
+                followConns[targetEmail] = conn;
                 document.getElementById('followInput').value = '';
             });
-            conn.on('data', (data) => {
-                try {
-                    const msg = JSON.parse(data);
-                    if (msg.type === 'follow_ack') appendDMMessage('System: ' + msg.nick + ' accepted your follow.');
-                    else if (msg.type === 'dm') appendDMMessage(msg.nick + ': ' + msg.text);
-                } catch (e) {}
-            });
-            conn.on('error', () => {
-                document.getElementById('followError').innerText = 'Could not connect to ' + target + '.';
-            });
+            conn.on('error', () => { document.getElementById('followError').innerText = "User offline or invalid."; setTimeout(()=>{ document.getElementById('followError').innerText = ""; }, 3000); });
         }
 
-        function sendDM() {
-            const target = document.getElementById('dmTargetInput').value.trim();
+        async function sendDM() {
+            const targetEmail = document.getElementById('dmTargetInput').value.trim().toLowerCase();
             const text = document.getElementById('dmInput').value.trim();
-            if (!target || !text) return;
-            let conn = followConns[target];
+            if(!targetEmail || !text) return;
+            
+            const key = await deriveKey([currentUser.email, targetEmail].sort().join(''));
+            const payload = await encryptMsg(text, key);
+            
+            let conn = followConns[targetEmail];
             if (!conn || !conn.open) {
-                conn = profilePeer.connect('yp_' + sanitizeNick(target), { reliable: true });
+                const targetId = 'yp_' + targetEmail.replace(/[^a-zA-Z0-9]/g, '');
+                conn = profilePeer.connect(targetId);
                 conn.on('open', () => {
-                    conn.send(JSON.stringify({ type: 'dm', nick: myNickname, text: text }));
-                    appendDMMessage('You (DM to ' + target + '): ' + text);
-                    followConns[target] = conn;
+                    conn.send(JSON.stringify({ type: 'dm', nick: currentUser.nick, sender: currentUser.email, payload }));
+                    appendDMMessage(currentUser.nick + " (You)", text);
+                    followConns[targetEmail] = conn;
                 });
-                conn.on('error', () => appendDMMessage('System: ' + target + ' is offline.'));
+                conn.on('error', () => { showToast("User offline.", "error"); });
             } else {
-                conn.send(JSON.stringify({ type: 'dm', nick: myNickname, text: text }));
-                appendDMMessage('You (DM to ' + target + '): ' + text);
+                conn.send(JSON.stringify({ type: 'dm', nick: currentUser.nick, sender: currentUser.email, payload }));
+                appendDMMessage(currentUser.nick + " (You)", text);
             }
             document.getElementById('dmInput').value = '';
         }
 
-        function appendDMMessage(text) {
+        function appendDMMessage(sender, text) {
             const el = document.getElementById('dmMessages');
-            el.textContent += text + '\n';
+            if(el.innerText === "No messages yet.") el.innerText = "";
+            el.textContent += `[${new Date().toLocaleTimeString()}] ${sender}: ${text}\n`;
             document.getElementById('dmArea').scrollTop = document.getElementById('dmArea').scrollHeight;
         }
 
         function renderProfileLists() {
-            const following = loadJSON(STORAGE_KEY_FOLLOWING, []);
-            const followers = loadJSON(STORAGE_KEY_FOLLOWERS, []);
-            document.getElementById('followingList').innerHTML = following.length > 0 
-                ? following.map(n => `<li>${n}</li>`).join('') 
-                : '<li>Not following anyone.</li>';
-            document.getElementById('followersList').innerHTML = followers.length > 0 
-                ? followers.map(n => `<li>${n}</li>`).join('') 
-                : '<li>No followers yet.</li>';
+            const db = getDB();
+            document.getElementById('followingList').innerHTML = db.following.length ? db.following.map(e => `<li class="list-item"><span>${escapeHtml(e)}</span></li>`).join('') : '<li class="text-muted" style="padding:5px 0;">Not following anyone.</li>';
+            document.getElementById('followersList').innerHTML = db.followers.length ? db.followers.map(n => `<li class="list-item"><span>${escapeHtml(n)}</span></li>`).join('') : '<li class="text-muted" style="padding:5px 0;">No followers yet.</li>';
         }
 
-        // ---------- Host Logic ----------
+        // ---------- Chat Rooms ----------
+        let hostPeer = null, guestPeer = null, guestConn = null, hostConnections = [], myRole = null, roomName = null;
+
         function toggleHostCode() {
             const isPrivate = document.getElementById('hostPrivateCheck').checked;
-            document.getElementById('hostCodeDisplay').hidden = !isPrivate;
-            if (isPrivate && !document.getElementById('generatedCode').innerText) {
-                document.getElementById('generatedCode').innerText = generateCode();
-            }
+            document.getElementById('hostCodeDisplay').classList.toggle('hidden', !isPrivate);
+            if (isPrivate) document.getElementById('generatedCode').value = generateCode();
         }
-
+        function toggleJoinCode() {
+            const isPrivate = document.getElementById('joinPrivateCheck').checked;
+            document.getElementById('joinCodeArea').classList.toggle('hidden', !isPrivate);
+        }
         function generateCode() {
             const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-            let code = '';
-            for (let i = 0; i < 4; i++) code += chars.charAt(Math.floor(Math.random() * chars.length));
-            return code;
+            return Array.from({ length: 4 }, () => chars.charAt(Math.floor(Math.random() * chars.length))).join('');
         }
 
-        function startHost() {
+        async function startHost() {
             roomName = document.getElementById('hostRoomInput').value.trim();
-            if (!roomName) {
-                document.getElementById('hostError').innerText = 'Please enter a room name.';
-                return;
-            }
+            if(!roomName) return;
             const isPrivate = document.getElementById('hostPrivateCheck').checked;
-            const code = document.getElementById('generatedCode').innerText;
-            let peerId = isPrivate ? `yr_${sanitizeNick(roomName)}_${code}` : `yr_${sanitizeNick(roomName)}`;
+            const code = document.getElementById('generatedCode').value;
+            const peerId = `ypr_${roomName.toLowerCase().replace(/[^a-z0-9]/g, '')}_${isPrivate ? code : 'pub'}`;
 
             if (hostPeer) hostPeer.destroy();
             if (guestPeer) { guestPeer.destroy(); guestPeer = null; }
@@ -685,226 +981,176 @@
             myRole = 'host';
 
             hostPeer = new Peer(peerId);
-
             hostPeer.on('open', () => {
-                showChat(roomName);
-                appendMessage('System: Room "' + roomName + '" is open.');
-                if (isPrivate) {
-                    appendMessage('System: Give your friends the code: ' + code);
-                } else {
-                    appendMessage('System: Room is public.');
-                    registerPublicRoom(roomName);
-                }
+                switchView('chat');
+                document.getElementById('chatNavItem').hidden = false;
+                document.getElementById('roomLabel').innerText = "Room: " + roomName;
+                document.getElementById('messages').innerHTML = '';
+                appendChatMessage('System', `Room created. ${isPrivate ? 'Code: ' + code : 'Public.'}`);
+                if(!isPrivate) registerPublicRoom(roomName);
             });
 
             hostPeer.on('connection', (conn) => {
-                let nick = (conn.metadata && conn.metadata.nick) ? conn.metadata.nick : 'Unknown';
-                const entry = { conn: conn, nick: nick };
+                let nick = conn.metadata?.nick || 'Unknown';
+                let entry = { conn, nick };
                 hostConnections.push(entry);
 
                 conn.on('open', () => {
-                    let userList = [myNickname];
-                    hostConnections.forEach(e => {
-                        if (e.conn !== conn && e.nick) userList.push(e.nick);
-                    });
-                    conn.send(JSON.stringify({ type: 'system', text: 'Connected. Users: ' + userList.join(', ') }));
-                    appendMessage('System: ' + nick + ' joined');
-                    broadcastToAllExcept(conn, { type: 'system', text: nick + ' joined' });
+                    appendChatMessage('System', `${nick} joined.`);
+                    broadcastToAllExcept(conn, { type: 'system', text: `${nick} joined.` });
                 });
 
-                conn.on('data', (data) => {
+                conn.on('data', async (data) => {
                     try {
-                        const msgObj = JSON.parse(data);
-                        if (msgObj.type === 'chat') {
-                            appendMessage(entry.nick + ': ' + msgObj.msg);
-                            broadcastToAllExcept(conn, { type: 'chat', nick: entry.nick, msg: msgObj.msg });
+                        const msg = JSON.parse(data);
+                        if(msg.type === 'chat') {
+                            const key = await deriveKey(roomName + (isPrivate ? code : 'pub'));
+                            const text = await decryptMsg(msg.payload, key);
+                            appendChatMessage(nick, text);
+                            broadcastToAllExcept(conn, { type: 'chat', nick: nick, payload: msg.payload });
                         }
-                    } catch (e) {}
+                    } catch(e) {}
                 });
 
                 conn.on('close', () => {
                     hostConnections = hostConnections.filter(e => e !== entry);
-                    appendMessage('System: ' + entry.nick + ' left');
-                    broadcastToAllExcept(conn, { type: 'system', text: entry.nick + ' left' });
+                    appendChatMessage('System', `${nick} left.`);
                 });
             });
-
-            hostPeer.on('error', (err) => {
-                if (err.type === 'unavailable-id') {
-                    document.getElementById('hostError').innerText = 'Room name/code already in use. Try another.';
-                    document.getElementById('generatedCode').innerText = generateCode();
-                } else {
-                    document.getElementById('hostError').innerText = 'Error: ' + err.message;
-                }
-                if (hostPeer) { hostPeer.destroy(); hostPeer = null; }
-                if (myRole === 'host') { hide('chatArea'); show('hostPanel'); myRole = null; }
-            });
         }
 
-        function registerPublicRoom(room) {
-            if (isDirectory) {
-                activePublicRooms.push({ room: room, host: myNickname, time: Date.now() });
-                return;
-            }
-            if (feedConn && feedConn.open) {
-                feedConn.send(JSON.stringify({ type: 'register_room', room: room, host: myNickname }));
-            }
-        }
-
-        function broadcastToAllExcept(excludeConn, obj) {
-            const data = JSON.stringify(obj);
-            hostConnections.forEach(entry => {
-                if (entry.conn !== excludeConn && entry.conn.open) entry.conn.send(data);
-            });
-        }
-
-        // ---------- Join Logic ----------
-        function toggleJoinCode() {
-            const isPrivate = document.getElementById('joinPrivateCheck').checked;
-            document.getElementById('joinCodeArea').hidden = !isPrivate;
-        }
-
-        function startJoin() {
+        async function startJoin() {
             roomName = document.getElementById('joinRoomInput').value.trim();
-            if (!roomName) {
-                document.getElementById('joinError').innerText = 'Please enter the room name.';
-                return;
-            }
+            if(!roomName) return;
             const isPrivate = document.getElementById('joinPrivateCheck').checked;
-            const code = document.getElementById('joinCodeInput').value.trim().toUpperCase();
-            if (isPrivate && !code) {
-                document.getElementById('joinError').innerText = 'Please enter the 4-character join code.';
-                return;
-            }
-            let targetId = isPrivate ? `yr_${sanitizeNick(roomName)}_${code}` : `yr_${sanitizeNick(roomName)}`;
+            const code = document.getElementById('joinCodeInput').value;
+            const targetId = `ypr_${roomName.toLowerCase().replace(/[^a-z0-9]/g, '')}_${isPrivate ? code : 'pub'}`;
 
             if (guestPeer) guestPeer.destroy();
             if (hostPeer) { hostPeer.destroy(); hostPeer = null; }
             myRole = 'guest';
 
             guestPeer = new Peer();
-
-            guestPeer.on('open', (id) => {
-                guestConn = guestPeer.connect(targetId, { metadata: { nick: myNickname } });
-                guestConn.on('open', () => showChat(roomName));
-                guestConn.on('data', (data) => {
+            guestPeer.on('open', () => {
+                guestConn = guestPeer.connect(targetId, { metadata: { nick: currentUser.nick } });
+                guestConn.on('open', () => {
+                    switchView('chat');
+                    document.getElementById('chatNavItem').hidden = false;
+                    document.getElementById('roomLabel').innerText = "Room: " + roomName;
+                    document.getElementById('messages').innerHTML = '';
+                });
+                guestConn.on('data', async (data) => {
                     try {
-                        const msgObj = JSON.parse(data);
-                        if (msgObj.type === 'chat') appendMessage(msgObj.nick + ': ' + msgObj.msg);
-                        else if (msgObj.type === 'system') appendMessage('System: ' + msgObj.text);
-                    } catch (e) {}
+                        const msg = JSON.parse(data);
+                        if(msg.type === 'chat') {
+                            const key = await deriveKey(roomName + (isPrivate ? code : 'pub'));
+                            const text = await decryptMsg(msg.payload, key);
+                            appendChatMessage(msg.nick, text);
+                        } else if(msg.type === 'system') {
+                            appendChatMessage('System', msg.text);
+                        }
+                    } catch(e) {}
                 });
-                guestConn.on('close', () => {
-                    appendMessage('System: Disconnected from room.');
-                    setTimeout(leaveRoom, 1000);
-                });
-                guestConn.on('error', (err) => {
-                    document.getElementById('joinError').innerText = 'Connection error.';
-                    setTimeout(leaveRoom, 1000);
-                });
-            });
-
-            guestPeer.on('error', (err) => {
-                if (err.type === 'peer-unavailable') {
-                    document.getElementById('joinError').innerText = 'Room not found. Check name/code.';
-                } else {
-                    document.getElementById('joinError').innerText = 'Error: ' + err.message;
-                }
-                if (guestPeer) { guestPeer.destroy(); guestPeer = null; }
             });
         }
 
-        // ---------- Directory Fetch (now newest rooms first) ----------
+        function registerPublicRoom(room) {
+            if (isDirectory) { if(!activePublicRooms.some(r => r.room === room)) activePublicRooms.push({ room, host: currentUser.nick, time: Date.now() }); return; }
+            if (feedConn && feedConn.open) feedConn.send(JSON.stringify({ type: 'register_room', room, host: currentUser.nick }));
+        }
+
         function fetchPublicRooms() {
             const listEl = document.getElementById('publicRoomsList');
-            listEl.innerHTML = '<li>Searching for public rooms...</li>';
-
+            listEl.innerHTML = '<div class="text-muted">Searching...</div>';
             if (isDirectory) {
                 const sorted = [...activePublicRooms].sort((a,b) => b.time - a.time);
-                listEl.innerHTML = sorted.length > 0 
-                    ? sorted.map(r => `<li>${r.room} <button onclick="document.getElementById('joinRoomInput').value='${r.room}'; startJoin();">Join</button></li>`).join('')
-                    : '<li>No public rooms currently active.</li>';
+                listEl.innerHTML = sorted.length ? sorted.map(r => `<div class="list-item"><span>${escapeHtml(r.room)}</span><button class="btn btn-primary btn-small" onclick="document.getElementById('joinRoomInput').value='${r.room}'; document.getElementById('joinPrivateCheck').checked=false; toggleJoinCode(); startJoin();">Join</button></div>`).join('') : '<div class="text-muted">None active.</div>';
                 return;
             }
-
             if (feedConn && feedConn.open) {
                 feedConn.send(JSON.stringify({ type: 'get_rooms' }));
                 const tempHandler = (data) => {
                     try {
                         const msg = JSON.parse(data);
                         if (msg.type === 'room_list') {
-                            listEl.innerHTML = msg.rooms.length > 0 
-                                ? msg.rooms.map(r => `<li>${r} <button onclick="document.getElementById('joinRoomInput').value='${r}'; startJoin();">Join</button></li>`).join('')
-                                : '<li>No public rooms currently active.</li>';
+                            listEl.innerHTML = msg.rooms.length ? msg.rooms.map(r => `<div class="list-item"><span>${escapeHtml(r.room)}</span><button class="btn btn-primary btn-small" onclick="document.getElementById('joinRoomInput').value='${r.room}'; document.getElementById('joinPrivateCheck').checked=false; toggleJoinCode(); startJoin();">Join</button></div>`).join('') : '<div class="text-muted">None active.</div>';
                             feedConn.off('data', tempHandler);
                         }
                     } catch(e) {}
                 };
                 feedConn.on('data', tempHandler);
-            } else {
-                listEl.innerHTML = '<li>Directory offline. Ask host for room name.</li>';
+            } else { listEl.innerHTML = '<div class="text-muted">Directory offline.</div>'; }
+        }
+
+        async function sendChat() {
+            const input = document.getElementById('chatInput');
+            const text = input.value.trim();
+            if(!text) return;
+            input.value = '';
+            
+            const isPrivate = myRole === 'host' ? document.getElementById('hostPrivateCheck').checked : document.getElementById('joinPrivateCheck').checked;
+            const code = myRole === 'host' ? document.getElementById('generatedCode').value : document.getElementById('joinCodeInput').value;
+            const key = await deriveKey(roomName + (isPrivate ? code : 'pub'));
+            const payload = await encryptMsg(text, key);
+
+            appendChatMessage(currentUser.nick + " (You)", text);
+            const msgObj = { type: 'chat', nick: currentUser.nick, payload };
+
+            if (myRole === 'host') {
+                hostConnections.forEach(entry => { if (entry.conn.open) entry.conn.send(JSON.stringify(msgObj)); });
+            } else if (guestConn && guestConn.open) {
+                guestConn.send(JSON.stringify(msgObj));
             }
         }
 
-        // ---------- Chat & Leave ----------
-        function sendChat() {
-            const input = document.getElementById('chatInput');
-            const text = input.value.trim();
-            if (!text) return;
-            input.value = '';
-            if (myRole === 'host') {
-                appendMessage('You: ' + text);
-                const msgObj = { type: 'chat', nick: myNickname, msg: text };
-                hostConnections.forEach(entry => {
-                    if (entry.conn.open) entry.conn.send(JSON.stringify(msgObj));
-                });
-            } else if (myRole === 'guest') {
-                appendMessage('You: ' + text);
-                if (guestConn && guestConn.open) guestConn.send(JSON.stringify({ type: 'chat', msg: text }));
-            }
+        function appendChatMessage(author, text) {
+            const container = document.getElementById('messages');
+            const isSystem = author === 'System';
+            const avatarChar = isSystem ? '!' : author.charAt(0).toUpperCase();
+            
+            const html = isSystem ? 
+                `<div class="msg-system">${escapeHtml(text)}</div>` :
+                `<div class="message-group">
+                    <div class="msg-avatar">${avatarChar}</div>
+                    <div class="msg-content">
+                        <div class="msg-header">
+                            <span class="msg-author">${escapeHtml(author)}</span>
+                            <span class="msg-time">${new Date().toLocaleTimeString()}</span>
+                        </div>
+                        <div class="msg-text">${escapeHtml(text)}</div>
+                    </div>
+                </div>`;
+            
+            container.insertAdjacentHTML('beforeend', html);
+            container.scrollTop = container.scrollHeight;
         }
 
         function leaveRoom() {
-            if (myRole === 'host') {
-                hostConnections.forEach(entry => { if (entry.conn.open) entry.conn.close(); });
-                if (hostPeer) hostPeer.destroy();
-                hostPeer = null;
-                hostConnections = [];
-                if (isDirectory) {
-                    activePublicRooms = activePublicRooms.filter(r => r.room !== roomName);
-                }
-            } else if (myRole === 'guest') {
-                if (guestConn) guestConn.close();
-                if (guestPeer) guestPeer.destroy();
-                guestPeer = null;
-                guestConn = null;
-            }
-            myRole = null;
-            roomName = null;
-            showMain();
-            document.getElementById('messages').textContent = '';
-            document.getElementById('chatInput').disabled = true;
-            document.getElementById('sendBtn').disabled = true;
-            document.getElementById('generatedCode').innerText = '';
-            document.getElementById('hostPrivateCheck').checked = false;
-            toggleHostCode();
+            if (hostPeer) hostPeer.destroy();
+            if (guestPeer) guestPeer.destroy();
+            hostPeer = null; guestPeer = null; guestConn = null; hostConnections = []; myRole = null;
+            document.getElementById('chatNavItem').hidden = true;
+            switchView('rooms');
         }
 
-        // ---------- Global Events ----------
+        // ---------- Init ----------
         window.addEventListener('DOMContentLoaded', () => {
-            showNicknameUI();
+            const db = getDB();
+            applyTheme();
+            if (db.session && db.users[db.session]) {
+                initApp(db.users[db.session]);
+            } else {
+                document.getElementById('authScreen').classList.remove('hidden');
+            }
         });
 
         document.addEventListener('keydown', (e) => {
-            if (e.key !== 'Enter') return;
-            const targetId = e.target.id;
-            if (targetId === 'chatInput') sendChat();
-            else if (targetId === 'nicknameInput') setNickname();
-            else if (targetId === 'hostRoomInput') startHost();
-            else if (targetId === 'joinRoomInput' || targetId === 'joinCodeInput') startJoin();
-            else if (targetId === 'followInput') followUser();
-            else if (targetId === 'dmInput') sendDM();
-            else if (targetId === 'postInput') postMessage();
+            if (e.key === 'Enter') {
+                if (e.target.id === 'postInput') postMessage();
+                else if (e.target.id === 'chatInput') sendChat();
+                else if (e.target.id === 'dmInput') sendDM();
+                else if (e.target.id === 'followInput') followUser();
+            }
         });
     </script>
 </body>
