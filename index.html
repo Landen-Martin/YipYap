@@ -834,6 +834,19 @@
         if (!data || !data.type) return;
         
         switch(data.type) {
+            case 'feed_post':
+                if (data.post) {
+                    // Prevent duplicates
+                    if (!db.posts.some(p => p.id === data.post.id)) {
+                        db.posts.unshift(data.post);
+                        saveDB();
+                        if (activeView === 'feed' || activeView === 'myposts') {
+                            renderFeed();
+                        }
+                        showToast(`New post from ${data.post.author}`, 'info');
+                    }
+                }
+                break;
             case 'chat':
                 displayChatMessage(conn.peer, data.text, false, data.timestamp, true, data.attachment);
                 break;
@@ -956,10 +969,12 @@
     function clearAttachment(context) {
         if (context === 'chat') {
             currentChatAttachment = null;
-            document.getElementById('chatAttPreview').innerHTML = '';
+            const el = document.getElementById('chatAttPreview');
+            if (el) el.innerHTML = '';
         } else if (context === 'post') {
             currentPostAttachment = null;
-            document.getElementById('postAttPreview').innerHTML = '';
+            const el = document.getElementById('postAttPreview');
+            if (el) el.innerHTML = '';
         }
     }
 
@@ -1067,6 +1082,18 @@
         currentPostAttachment = null;
         renderFeed();
         showToast('Posted!', 'success');
+
+        // Broadcast the post to all connected peers
+        const payload = { type: 'feed_post', post: post };
+        Object.values(connections).forEach(conn => {
+            if (conn && conn.open) {
+                try { 
+                    conn.send(payload); 
+                } catch(e) { 
+                    console.error("Failed to send feed post to peer:", e); 
+                }
+            }
+        });
     }
 
     function toggleLike(postId) {
