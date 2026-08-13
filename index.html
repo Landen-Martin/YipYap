@@ -380,6 +380,16 @@
 
         .image-viewer { position: fixed; inset: 0; background: rgba(0,0,0,0.92); z-index: 3000; display: flex; align-items: center; justify-content: center; padding: 20px; cursor: zoom-out; }
         .image-viewer img { max-width: 95%; max-height: 95%; border-radius: 8px; }
+        
+        /* Dev Mode Panel */
+        #devPanel {
+            position: fixed; bottom: 10px; left: 10px; 
+            background: rgba(0,0,0,0.85); color: #00ff00; 
+            padding: 10px; border-radius: 5px; 
+            font-family: monospace; font-size: 11px; z-index: 9998; 
+            max-width: 200px; border: 1px solid #00ff00;
+            pointer-events: none;
+        }
     </style>
 </head>
 <body>
@@ -671,514 +681,510 @@
 <div id="modalContainer"></div>
 
 <script>
+// ============ DEV MODE ============
+let devMode = false;
+const devKeys = { d: false, e: false, v: false };
+let devKeyTimer = null;
+
+document.addEventListener('keydown', (e) => {
+    const key = e.key.toLowerCase();
+    if (key in devKeys) {
+        devKeys[key] = true;
+        clearTimeout(devKeyTimer);
+        devKeyTimer = setTimeout(() => {
+            devKeys.d = false; devKeys.e = false; devKeys.v = false;
+        }, 1000);
+        
+        if (devKeys.d && devKeys.e && devKeys.v) {
+            toggleDevMode();
+            devKeys.d = false; devKeys.e = false; devKeys.v = false;
+        }
+    }
+});
+
+function toggleDevMode() {
+    devMode = !devMode;
+    if (devMode) {
+        showToast('Dev Mode Activated', 'warning');
+        const panel = document.createElement('div');
+        panel.id = 'devPanel';
+        panel.innerHTML = `
+            <div style="font-weight:bold;border-bottom:1px solid #00ff00;padding-bottom:2px;margin-bottom:4px;">DEV MODE</div>
+            <div>Role: <span id="devRole">N/A</span></div>
+            <div>PeerID: <span id="devPeerId" style="word-break:break-all">N/A</span></div>
+            <div>Feed: <span id="devFeedCount">0</span> posts</div>
+            <div>Conns: <span id="devConns">0</span></div>
+        `;
+        document.body.appendChild(panel);
+        setInterval(updateDevPanel, 1000);
+    } else {
+        showToast('Dev Mode Disabled', 'info');
+        document.getElementById('devPanel')?.remove();
+    }
+}
+
+function updateDevPanel() {
+    if (!devMode) return;
+    const roleEl = document.getElementById('devRole');
+    const peerEl = document.getElementById('devPeerId');
+    const feedEl = document.getElementById('devFeedCount');
+    const connsEl = document.getElementById('devConns');
+    
+    if (roleEl) roleEl.textContent = isDirectory ? 'Directory' : 'Client';
+    if (peerEl) peerEl.textContent = myPeerId || 'N/A';
+    if (feedEl) feedEl.textContent = globalFeed.length;
+    if (connsEl) connsEl.textContent = Object.keys(peerConnections).length + (isDirectory ? activeFeedConns.length : 0);
+}
+
 // ============ CRYPTO ============
-async function hashPassword(pw){
-    const e=new TextEncoder();
-    const h=await crypto.subtle.digest('SHA-256',e.encode(pw));
+async function hashPassword(pw) {
+    const e = new TextEncoder();
+    const h = await crypto.subtle.digest('SHA-256', e.encode(pw));
     return btoa(String.fromCharCode(...new Uint8Array(h)));
 }
-async function deriveKey(secret){
-    const e=new TextEncoder();
-    const km=await crypto.subtle.importKey('raw',e.encode(secret),{name:'PBKDF2'},false,['deriveKey']);
-    return crypto.subtle.deriveKey({name:'PBKDF2',salt:e.encode('yipyap_salt'),iterations:1000,hash:'SHA-256'},km,{name:'AES-GCM',length:256},true,['encrypt','decrypt']);
-}
-async function encryptMsg(msg,key){
-    const iv=crypto.getRandomValues(new Uint8Array(12));
-    const e=new TextEncoder();
-    const c=await crypto.subtle.encrypt({name:'AES-GCM',iv},key,e.encode(msg));
-    return btoa(String.fromCharCode(...iv,...new Uint8Array(c)));
-}
-async function decryptMsg(cipher,key){
-    try{
-        const arr=Uint8Array.from(atob(cipher),c=>c.charCodeAt(0));
-        const iv=arr.slice(0,12),data=arr.slice(12);
-        return new TextDecoder().decode(await crypto.subtle.decrypt({name:'AES-GCM',iv},key,data));
-    }catch(e){return '[Decryption Error]';}
-}
-function escapeHtml(s){
-    if(s==null)return '';
-    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+
+function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
 
 // ============ DB ============
-const DB_KEY='yipyap_db_v4';
-function getDB(){
-    try{
-        return JSON.parse(localStorage.getItem(DB_KEY))||defaultDB();
-    }catch{return defaultDB();}
+const DB_KEY = 'yipyap_db_v5';
+function getDB() {
+    try {
+        let db = JSON.parse(localStorage.getItem(DB_KEY));
+        if (!db) return defaultDB();
+        // Merge defaults to ensure new keys exist
+        return Object.assign(defaultDB(), db);
+    } catch { return defaultDB(); }
 }
-function defaultDB(){
-    return {users:{},session:null,following:[],followers:[],myPosts:[],feedCache:[],interestProfile:{},likedPosts:[],dislikedPosts:[],viewedPosts:[],dmHistory:{},settings:{theme:'dark',notifications:false,sound:true,chatAlign:'me-right',dmPrivacy:'everyone'}};
+function defaultDB() {
+    return {
+        users: {}, session: null, following: [], followers: [],
+        myPosts: [], feedCache: [], interestProfile: {},
+        likedPosts: [], dislikedPosts: [], viewedPosts: [],
+        dmHistory: {}, settings: { theme: 'dark', notifications: false, sound: true, chatAlign: 'me-right', dmPrivacy: 'everyone' }
+    };
 }
-function saveDB(db){localStorage.setItem(DB_KEY,JSON.stringify(db));}
-let currentUser=null,myPeerId=null;
+function saveDB(db) { localStorage.setItem(DB_KEY, JSON.stringify(db)); }
+let currentUser = null, myPeerId = null;
 
 // ============ AUTH ============
-function toggleAuthView(){
+function toggleAuthView() {
     document.getElementById('loginForm').classList.toggle('hidden');
     document.getElementById('registerForm').classList.toggle('hidden');
 }
-function showAuthError(elId,msg){
-    const el=document.getElementById(elId);
-    el.textContent=msg;el.classList.remove('hidden');
-    setTimeout(()=>el.classList.add('hidden'),4000);
+function showAuthError(elId, msg) {
+    const el = document.getElementById(elId);
+    el.textContent = msg; el.classList.remove('hidden');
+    setTimeout(() => el.classList.add('hidden'), 4000);
 }
-async function register(){
-    const nick=document.getElementById('regNick').value.trim();
-    const email=document.getElementById('regEmail').value.trim().toLowerCase();
-    const pass=document.getElementById('regPassword').value;
-    if(!nick||!email||pass.length<6){showAuthError('regError','Fill all fields. Password min 6 chars.');return;}
-    const db=getDB();
-    if(Object.values(db.users).some(u=>u.email===email)){showAuthError('regError','Email already registered.');return;}
-    const passHash=await hashPassword(pass);
-    const user={id:'yp_'+Date.now(),nick,email,passHash,createdAt:Date.now(),bio:''};
-    db.users[user.id]=user;db.session=user.id;saveDB(db);
+async function register() {
+    const nick = document.getElementById('regNick').value.trim();
+    const email = document.getElementById('regEmail').value.trim().toLowerCase();
+    const pass = document.getElementById('regPassword').value;
+    if (!nick || !email || pass.length < 6) { showAuthError('regError', 'Fill all fields. Password min 6 chars.'); return; }
+    const db = getDB();
+    if (Object.values(db.users).some(u => u.email === email)) { showAuthError('regError', 'Email already registered.'); return; }
+    const passHash = await hashPassword(pass);
+    const user = { id: 'yp_' + Date.now(), nick, email, passHash, createdAt: Date.now(), bio: '' };
+    db.users[user.id] = user; db.session = user.id; saveDB(db);
     initApp(user);
 }
-async function login(){
-    const email=document.getElementById('loginEmail').value.trim().toLowerCase();
-    const pass=document.getElementById('loginPassword').value;
-    if(!email||!pass){showAuthError('loginError','Fill all fields.');return;}
-    const db=getDB();
-    const user=Object.values(db.users).find(u=>u.email===email);
-    if(!user){showAuthError('loginError','User not found.');return;}
-    const ph=await hashPassword(pass);
-    if(user.passHash!==ph){showAuthError('loginError','Incorrect password.');return;}
-    db.session=user.id;saveDB(db);
+async function login() {
+    const email = document.getElementById('loginEmail').value.trim().toLowerCase();
+    const pass = document.getElementById('loginPassword').value;
+    if (!email || !pass) { showAuthError('loginError', 'Fill all fields.'); return; }
+    const db = getDB();
+    const user = Object.values(db.users).find(u => u.email === email);
+    if (!user) { showAuthError('loginError', 'User not found.'); return; }
+    const ph = await hashPassword(pass);
+    if (user.passHash !== ph) { showAuthError('loginError', 'Incorrect password.'); return; }
+    db.session = user.id; saveDB(db);
     initApp(user);
 }
-function loginAsGuest(){
-    const nick='Guest'+Math.floor(Math.random()*1000);
-    const user={id:'guest_'+Date.now(),nick,email:null,passHash:null,isGuest:true,createdAt:Date.now(),bio:''};
-    const db=getDB();db.users[user.id]=user;db.session=user.id;saveDB(db);
+function loginAsGuest() {
+    const nick = 'Guest' + Math.floor(Math.random() * 1000);
+    const user = { id: 'guest_' + Date.now(), nick, email: null, passHash: null, isGuest: true, createdAt: Date.now(), bio: '' };
+    const db = getDB(); db.users[user.id] = user; db.session = user.id; saveDB(db);
     initApp(user);
 }
-function logout(){
-    showModal('Logout','<p>Are you sure you want to log out?</p>',[
-        {label:'Cancel',class:'btn-secondary'},
-        {label:'Logout',class:'btn-danger',onClick:()=>{
-            const db=getDB();db.session=null;saveDB(db);
-            try{if(directoryPeer)directoryPeer.destroy();}catch{}
-            try{if(profilePeer)profilePeer.destroy();}catch{}
-            try{if(hostPeer)hostPeer.destroy();}catch{}
-            try{if(guestPeer)guestPeer.destroy();}catch{}
+function logout() {
+    showModal('Logout', '<p>Are you sure you want to log out?</p>', [
+        { label: 'Cancel', class: 'btn-secondary' },
+        { label: 'Logout', class: 'btn-danger', onClick: () => {
+            const db = getDB(); db.session = null; saveDB(db);
+            try { if (directoryPeer) directoryPeer.destroy(); } catch { }
+            try { if (profilePeer) profilePeer.destroy(); } catch { }
+            try { if (hostPeer) hostPeer.destroy(); } catch { }
+            try { if (guestPeer) guestPeer.destroy(); } catch { }
             location.reload();
         }}
     ]);
 }
 
 // ============ APP INIT ============
-function initApp(user){
-    currentUser=user;
-    myPeerId='yp_'+(user.email?user.email.replace(/[^a-zA-Z0-9]/g,''):user.id);
+function initApp(user) {
+    currentUser = user;
+    myPeerId = 'yp_' + (user.email ? user.email.replace(/[^a-zA-Z0-9]/g, '') : user.id);
     document.getElementById('authScreen').classList.add('hidden');
-    document.getElementById('userName').textContent=user.nick;
-    document.getElementById('userAvatar').textContent=user.nick.charAt(0).toUpperCase();
-    if(user.isGuest){
-        const s=document.getElementById('userStatus');
-        s.textContent='Guest';s.classList.add('offline');
+    document.getElementById('userName').textContent = user.nick;
+    document.getElementById('userAvatar').textContent = user.nick.charAt(0).toUpperCase();
+    if (user.isGuest) {
+        const s = document.getElementById('userStatus');
+        s.textContent = 'Guest'; s.classList.add('offline');
     }
-    applyTheme();loadSettings();
-    renderFeed();renderMyPosts();renderProfile();renderSettings();renderDMList();
-    initBackgroundPeer();initProfilePeer();
-    if(currentUser.email){
-        // Auto-connect to followed users
-        const db=getDB();
-        db.following.forEach(f=>connectToPeer(f.peerId));
-    }
+    applyTheme(); loadSettings();
+    renderFeed(); renderMyPosts(); renderProfile(); renderSettings(); renderDMList();
+    initBackgroundPeer(); initProfilePeer();
+    
+    const db = getDB();
+    db.following.forEach(f => connectToPeer(f.peerId));
 }
 
 // ============ UI HELPERS ============
-function switchView(viewName){
-    document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
-    const v=document.getElementById('view-'+viewName);
-    if(v)v.classList.add('active');
-    document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+function switchView(viewName) {
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    const v = document.getElementById('view-' + viewName);
+    if (v) v.classList.add('active');
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
     document.querySelector(`.nav-item[data-view="${viewName}"]`)?.classList.add('active');
     toggleSidebar(false);
-    if(viewName==='profile')renderProfile();
-    if(viewName==='settings')renderSettings();
-    if(viewName==='dms')renderDMList();
-    if(viewName==='myposts')renderMyPosts();
-    if(viewName==='feed')renderFeed();
+    if (viewName === 'profile') renderProfile();
+    if (viewName === 'settings') renderSettings();
+    if (viewName === 'dms') renderDMList();
+    if (viewName === 'myposts') renderMyPosts();
+    if (viewName === 'feed') renderFeed();
 }
-function toggleSidebar(force){
-    const sb=document.getElementById('sidebar');
-    const bd=document.getElementById('backdrop');
-    if(force===false){sb.classList.remove('open');bd.classList.remove('show');return;}
+function toggleSidebar(force) {
+    const sb = document.getElementById('sidebar');
+    const bd = document.getElementById('backdrop');
+    if (force === false) { sb.classList.remove('open'); bd.classList.remove('show'); return; }
     sb.classList.toggle('open');
     bd.classList.toggle('show');
 }
-function showToast(msg,type='info',duration=3000){
-    const c=document.getElementById('toastContainer');
-    const t=document.createElement('div');
-    t.className='toast '+type;t.textContent=msg;
+function showToast(msg, type = 'info', duration = 3000) {
+    const c = document.getElementById('toastContainer');
+    const t = document.createElement('div');
+    t.className = 'toast ' + type; t.textContent = msg;
     c.appendChild(t);
-    setTimeout(()=>{t.style.opacity='0';t.style.transform='translateX(120%)';setTimeout(()=>t.remove(),300);},duration);
+    setTimeout(() => { t.style.opacity = '0'; t.style.transform = 'translateX(120%)'; setTimeout(() => t.remove(), 300); }, duration);
 }
-function notify(title,body){
-    const db=getDB();
-    if(db.settings?.notifications&&Notification.permission==='granted'){
-        new Notification(title,{body});
-    }
-    if(db.settings?.sound)playSound();
+function notify(title, body) {
+    const db = getDB();
+    if (db.settings?.notifications && Notification.permission === 'granted') new Notification(title, { body });
+    if (db.settings?.sound) playSound();
 }
-function playSound(){
-    try{
-        const ctx=new(window.AudioContext||window.webkitAudioContext)();
-        const osc=ctx.createOscillator();const g=ctx.createGain();
-        osc.connect(g);g.connect(ctx.destination);
-        osc.type='sine';osc.frequency.value=880;
-        g.gain.setValueAtTime(0.08,ctx.currentTime);
-        g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.3);
-        osc.start();osc.stop(ctx.currentTime+0.3);
-    }catch(e){}
+function playSound() {
+    try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator(); const g = ctx.createGain();
+        osc.connect(g); g.connect(ctx.destination);
+        osc.type = 'sine'; osc.frequency.value = 880;
+        g.gain.setValueAtTime(0.08, ctx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+        osc.start(); osc.stop(ctx.currentTime + 0.3);
+    } catch (e) { }
 }
-function showModal(title,content,actions=[]){
-    const c=document.getElementById('modalContainer');
-    const o=document.createElement('div');
-    o.className='modal-overlay';
-    o.onclick=e=>{if(e.target===o)o.remove();};
-    let ah=actions.map((a,i)=>`<button class="btn ${a.class||'btn-secondary'}" data-act="${i}">${a.label}</button>`).join('');
-    o.innerHTML=`<div class="modal"><h3>${escapeHtml(title)}</h3>${content}<div class="modal-actions">${ah}</div></div>`;
-    actions.forEach((a,i)=>{
-        o.querySelector(`[data-act="${i}"]`).onclick=()=>{if(a.onClick)a.onClick(o);if(a.close!==false)o.remove();};
+function showModal(title, content, actions = []) {
+    const c = document.getElementById('modalContainer');
+    const o = document.createElement('div');
+    o.className = 'modal-overlay';
+    o.onclick = e => { if (e.target === o) o.remove(); };
+    let ah = actions.map((a, i) => `<button class="btn ${a.class || 'btn-secondary'}" data-act="${i}">${a.label}</button>`).join('');
+    o.innerHTML = `<div class="modal"><h3>${escapeHtml(title)}</h3>${content}<div class="modal-actions">${ah}</div></div>`;
+    actions.forEach((a, i) => {
+        o.querySelector(`[data-act="${i}"]`).onclick = () => { if (a.onClick) a.onClick(o); if (a.close !== false) o.remove(); };
     });
     c.appendChild(o);
 }
-function closeAllModals(){document.getElementById('modalContainer').innerHTML='';}
-function viewImage(src){
-    const v=document.createElement('div');
-    v.className='image-viewer';
-    v.innerHTML=`<img src="${escapeHtml(src)}">`;
-    v.onclick=()=>v.remove();
+function viewImage(src) {
+    const v = document.createElement('div');
+    v.className = 'image-viewer';
+    v.innerHTML = `<img src="${escapeHtml(src)}">`;
+    v.onclick = () => v.remove();
     document.body.appendChild(v);
 }
 
 // ============ FILE HANDLING ============
-const MAX_FILE_SIZE=2*1024*1024; // 2MB for P2P
-function handleFileSelect(event,context){
-    const file=event.target.files[0];
-    if(!file)return;
-    if(file.size>MAX_FILE_SIZE){
-        showToast('File too large (max 2MB for P2P)','error');return;
-    }
-    const reader=new FileReader();
-    reader.onload=e=>{
-        const att={name:file.name,type:file.type,size:file.size,dataUrl:e.target.result};
-        if(context==='post'){
-            currentPostAttachment=att;
-            renderPostAttachmentPreview();
-        }else if(context==='chat'){
-            currentChatAttachment=att;
-            renderChatAttachmentPreview();
+const MAX_FILE_SIZE = 2 * 1024 * 1024;
+let pendingAttachment = null; // Unified attachment handler
+
+function handleFileSelect(event, context) {
+    const file = event.target.files[0];
+    if (!file) return;
+    if (file.size > MAX_FILE_SIZE) { showToast('File too large (max 2MB for P2P)', 'error'); return; }
+    const reader = new FileReader();
+    reader.onload = e => {
+        pendingAttachment = { name: file.name, type: file.type, size: file.size, dataUrl: e.target.result, context };
+        if (context === 'post') renderPostAttachmentPreview();
+        else if (context === 'chat') {
+            const el = document.getElementById('chatInput') || document.getElementById('dmInput');
+            if (el) el.placeholder = 'Attached: ' + file.name;
         }
     };
     reader.readAsDataURL(file);
-    event.target.value='';
+    event.target.value = '';
 }
-let currentPostAttachment=null;
-let currentChatAttachment=null;
-function renderPostAttachmentPreview(){
-    const el=document.getElementById('postAttPreview');
-    if(!currentPostAttachment){el.innerHTML='';return;}
-    el.innerHTML=getAttachmentPreviewHtml(currentPostAttachment,'post');
+function renderPostAttachmentPreview() {
+    const el = document.getElementById('postAttPreview');
+    if (!el) return;
+    if (!pendingAttachment || pendingAttachment.context !== 'post') { el.innerHTML = ''; return; }
+    let media = '';
+    if (pendingAttachment.type.startsWith('image/')) media = `<img src="${pendingAttachment.dataUrl}">`;
+    else if (pendingAttachment.type.startsWith('video/')) media = `<video src="${pendingAttachment.dataUrl}" controls></video>`;
+    else media = `<div class="file-att">${escapeHtml(pendingAttachment.name)}</div>`;
+    el.innerHTML = `<div class="composer-attach-preview">${media}<button class="remove-att" onclick="clearAttachment('post')">×</button></div>`;
 }
-function renderChatAttachmentPreview(){
-    // For chat, we just send immediately with next message
-    const el=document.getElementById('chatInput');
-    if(currentChatAttachment){el.placeholder='Attached: '+currentChatAttachment.name;}
-    else{el.placeholder='Type a message...';}
+function clearAttachment(context) {
+    if (pendingAttachment && pendingAttachment.context === context) {
+        pendingAttachment = null;
+        if (context === 'post') renderPostAttachmentPreview();
+        else if (context === 'chat') {
+            const el = document.getElementById('chatInput') || document.getElementById('dmInput');
+            if (el) el.placeholder = 'Type a message...';
+        }
+    }
 }
-function getAttachmentPreviewHtml(att,context){
-    let media='';
-    if(att.type.startsWith('image/'))media=`<img src="${att.dataUrl}">`;
-    else if(att.type.startsWith('video/'))media=`<video src="${att.dataUrl}" controls></video>`;
-    else media=`<div class="file-att">${escapeHtml(att.name)}</div>`;
-    return `<div class="composer-attach-preview">${media}<button class="remove-att" onclick="clearAttachment('${context}')">×</button></div>`;
-}
-function clearAttachment(context){
-    if(context==='post'){currentPostAttachment=null;renderPostAttachmentPreview();}
-    else if(context==='chat'){currentChatAttachment=null;renderChatAttachmentPreview();}
-}
-function renderAttachment(att){
-    if(!att)return'';
-    if(att.type.startsWith('image/'))return `<div class="post-attachment"><img src="${att.dataUrl}" onclick="viewImage('${att.dataUrl}')"></div>`;
-    if(att.type.startsWith('video/'))return `<div class="post-attachment"><video src="${att.dataUrl}" controls></video></div>`;
-    return `<div class="post-attachment"><a class="file-att" href="${att.dataUrl}" download="${escapeHtml(att.name)}">${escapeHtml(att.name)} (${Math.round(att.size/1024)}KB)</a></div>`;
+function renderAttachment(att) {
+    if (!att) return '';
+    if (att.type.startsWith('image/')) return `<div class="post-attachment"><img src="${att.dataUrl}" onclick="viewImage('${att.dataUrl}')"></div>`;
+    if (att.type.startsWith('video/')) return `<div class="post-attachment"><video src="${att.dataUrl}" controls></video></div>`;
+    return `<div class="post-attachment"><a class="file-att" href="${att.dataUrl}" download="${escapeHtml(att.name)}">${escapeHtml(att.name)} (${Math.round(att.size / 1024)}KB)</a></div>`;
 }
 
-// ============ ALGORITHM (DWIM-like) ============
-function tokenize(text){
-    return(text||'').toLowerCase().match(/\b[a-z0-9]{3,}\b/g)||[];
-}
-function updateInterestProfile(text,weight){
-    const db=getDB();
-    if(!db.interestProfile)db.interestProfile={};
-    tokenize(text).forEach(w=>{
-        if(!db.interestProfile[w])db.interestProfile[w]=0;
-        db.interestProfile[w]+=weight;
-        if(db.interestProfile[w]>10)db.interestProfile[w]=10;
-        if(db.interestProfile[w]<-5)db.interestProfile[w]=-5;
+// ============ ALGORITHM ============
+function tokenize(text) { return (text || '').toLowerCase().match(/\b[a-z0-9]{3,}\b/g) || []; }
+function updateInterestProfile(text, weight) {
+    const db = getDB();
+    if (!db.interestProfile) db.interestProfile = {};
+    tokenize(text).forEach(w => {
+        if (!db.interestProfile[w]) db.interestProfile[w] = 0;
+        db.interestProfile[w] += weight;
+        if (db.interestProfile[w] > 10) db.interestProfile[w] = 10;
+        if (db.interestProfile[w] < -5) db.interestProfile[w] = -5;
     });
     saveDB(db);
 }
-function scorePost(post){
-    const db=getDB();
-    const profile=db.interestProfile||{};
-    let score=0;
-    tokenize(post.text+' '+post.nick).forEach(w=>{
-        if(profile[w])score+=profile[w];
-    });
-    // Engagement boost
-    const likes=post.likes||0;
-    const dislikes=post.dislikes||0;
-    score+=(likes-dislikes)*1.5;
-    if(post.replies)score+=post.replies.length*0.8;
-    // Following boost
-    if(db.following.some(f=>f.peerId===post.authorId))score+=3;
-    // Time decay
-    const hoursOld=(Date.now()-post.time)/(1000*60*60);
-    score-=hoursOld*0.15;
-    // Small random factor for variety (addictive discovery)
-    score+=Math.random()*0.5;
+function scorePost(post) {
+    const db = getDB();
+    const profile = db.interestProfile || {};
+    let score = 0;
+    tokenize(post.text + ' ' + post.nick).forEach(w => { if (profile[w]) score += profile[w]; });
+    score += ((post.likes || 0) - (post.dislikes || 0)) * 1.5;
+    if (post.replies) score += post.replies.length * 0.8;
+    if (db.following.some(f => f.peerId === post.authorId)) score += 3;
+    const hoursOld = (Date.now() - post.time) / (1000 * 60 * 60);
+    score -= hoursOld * 0.15;
+    score += Math.random() * 0.5;
     return score;
 }
 
-// ============ FEED ============
-let globalFeed=[];
-let directoryPeer=null;
-let isDirectory=false;
-let activeFeedConns=[];
-let feedConn=null;
-let dirRetryTimer=null;
-const DIR_ID='yipyap-dir-v4-'+Math.floor(Date.now()/(1000*60*60*24)); // Daily rotating dir ID
+// ============ FEED & P2P NETWORK ============
+let globalFeed = [];
+let directoryPeer = null;
+let isDirectory = false;
+let activeFeedConns = [];
+let feedConn = null;
+let dirRetryTimer = null;
+let activePublicRooms = [];
+const DIR_ID = 'yipyap-dir-v5-' + Math.floor(Date.now() / (1000 * 60 * 60 * 24));
 
-function updateFeedStatus(){
-    const el=document.getElementById('feedStatus');
-    if(!el)return;
-    if(isDirectory)el.textContent='Hosting network (Server)';
-    else if(feedConn&&feedConn.open)el.textContent='Connected';
-    else el.textContent='Connecting...';
+function updateFeedStatus() {
+    const el = document.getElementById('feedStatus');
+    if (!el) return;
+    if (isDirectory) el.textContent = 'Hosting network (Server)';
+    else if (feedConn && feedConn.open) el.textContent = 'Connected';
+    else el.textContent = 'Connecting...';
 }
 
-function initBackgroundPeer(){
-    const db=getDB();
-    globalFeed=db.feedCache||[];
-    
-    try{directoryPeer=new Peer(DIR_ID,{debug:0});}catch(e){
-        // Fallback: become client
-        becomeFeedClient();return;
-    }
-    
-    directoryPeer.on('open',()=>{
-        isDirectory=true;
+function initBackgroundPeer() {
+    const db = getDB();
+    globalFeed = db.feedCache || [];
+    try { directoryPeer = new Peer(DIR_ID, { debug: 0 }); } catch (e) { becomeFeedClient(); return; }
+
+    directoryPeer.on('open', () => {
+        isDirectory = true;
         updateFeedStatus();
         renderFeed();
-        // Prune old rooms
-        activePublicRooms=activePublicRooms.filter(r=>Date.now()-r.time<3600000);
+        activePublicRooms = activePublicRooms.filter(r => Date.now() - r.time < 3600000);
     });
-    directoryPeer.on('connection',conn=>{
+
+    directoryPeer.on('connection', conn => {
         activeFeedConns.push(conn);
-        let registeredRoom=null;
-        conn.on('data',data=>{
-            try{
-                const msg=typeof data==='string'?JSON.parse(data):data;
-                if(msg.type==='register_room'){
-                    registeredRoom=msg.room;
-                    if(!activePublicRooms.some(r=>r.room===msg.room&&r.hostId===msg.hostId)){
-                        activePublicRooms.push({room:msg.room,host:msg.host,hostId:msg.hostId,time:Date.now()});
+        let registeredRoom = null;
+        conn.on('data', data => {
+            try {
+                const msg = typeof data === 'string' ? JSON.parse(data) : data;
+                if (msg.type === 'register_room') {
+                    registeredRoom = msg.room;
+                    if (!activePublicRooms.some(r => r.room === msg.room && r.hostId === msg.hostId)) {
+                        activePublicRooms.push({ room: msg.room, host: msg.host, hostId: msg.hostId, time: Date.now() });
                     }
-                }else if(msg.type==='get_rooms'){
-                    conn.send(JSON.stringify({type:'room_list',rooms:activePublicRooms.filter(r=>Date.now()-r.time<3600000)}));
-                }else if(msg.type==='get_feed'){
-                    conn.send(JSON.stringify({type:'feed_data',posts:globalFeed.slice(0,200)}));
-                }else if(msg.type==='new_post'){
-                    if(!globalFeed.some(p=>p.id===msg.post.id)){
+                } else if (msg.type === 'get_rooms') {
+                    conn.send(JSON.stringify({ type: 'room_list', rooms: activePublicRooms.filter(r => Date.now() - r.time < 3600000) }));
+                } else if (msg.type === 'get_feed') {
+                    conn.send(JSON.stringify({ type: 'feed_data', posts: globalFeed.slice(0, 200) }));
+                } else if (msg.type === 'new_post') {
+                    if (!globalFeed.some(p => p.id === msg.post.id)) {
                         globalFeed.unshift(msg.post);
-                        if(globalFeed.length>200)globalFeed.length=200;
-                        const d=getDB();d.feedCache=globalFeed;saveDB(d);
+                        if (globalFeed.length > 200) globalFeed.length = 200;
+                        const d = getDB(); d.feedCache = globalFeed; saveDB(d);
                         renderFeed();
-                        if(msg.post.authorId!==currentUser.id)notify('New post from '+msg.post.nick,msg.post.text.slice(0,80));
+                        if (msg.post.authorId !== currentUser.id) notify('New post from ' + msg.post.nick, msg.post.text.slice(0, 80));
                     }
-                    activeFeedConns.forEach(c=>{if(c!==conn&&c.open)c.send(JSON.stringify({type:'new_post',post:msg.post}));});
-                }else if(msg.type==='update_post'){
-                    const idx=globalFeed.findIndex(p=>p.id===msg.post.id);
-                    if(idx!==-1){globalFeed[idx]=msg.post;const d=getDB();d.feedCache=globalFeed;saveDB(d);renderFeed();}
-                    activeFeedConns.forEach(c=>{if(c!==conn&&c.open)c.send(JSON.stringify({type:'update_post',post:msg.post}));});
-                }else if(msg.type==='delete_post'){
-                    globalFeed=globalFeed.filter(p=>p.id!==msg.postId);
-                    const d=getDB();d.feedCache=globalFeed;saveDB(d);
+                    activeFeedConns.forEach(c => { if (c !== conn && c.open) c.send(JSON.stringify({ type: 'new_post', post: msg.post })); });
+                } else if (msg.type === 'update_post') {
+                    const idx = globalFeed.findIndex(p => p.id === msg.post.id);
+                    if (idx !== -1) { globalFeed[idx] = msg.post; const d = getDB(); d.feedCache = globalFeed; saveDB(d); renderFeed(); }
+                    activeFeedConns.forEach(c => { if (c !== conn && c.open) c.send(JSON.stringify({ type: 'update_post', post: msg.post })); });
+                } else if (msg.type === 'delete_post') {
+                    globalFeed = globalFeed.filter(p => p.id !== msg.postId);
+                    const d = getDB(); d.feedCache = globalFeed; saveDB(d);
                     renderFeed();
-                    activeFeedConns.forEach(c=>{if(c!==conn&&c.open)c.send(JSON.stringify({type:'delete_post',postId:msg.postId}));});
+                    activeFeedConns.forEach(c => { if (c !== conn && c.open) c.send(JSON.stringify({ type: 'delete_post', postId: msg.postId })); });
                 }
-            }catch(e){}
+            } catch (e) { }
         });
-        conn.on('close',()=>{
-            activeFeedConns=activeFeedConns.filter(c=>c!==conn);
-            if(registeredRoom)activePublicRooms=activePublicRooms.filter(r=>r.room!==registeredRoom);
+        conn.on('close', () => {
+            activeFeedConns = activeFeedConns.filter(c => c !== conn);
+            if (registeredRoom) activePublicRooms = activePublicRooms.filter(r => r.room !== registeredRoom);
         });
-        conn.on('error',()=>{activeFeedConns=activeFeedConns.filter(c=>c!==conn);});
+        conn.on('error', () => { activeFeedConns = activeFeedConns.filter(c => c !== conn); });
     });
-    directoryPeer.on('error',err=>{
-        if(err.type==='unavailable-id'){
-            isDirectory=false;
-            try{directoryPeer.destroy();}catch{}
+
+    directoryPeer.on('error', err => {
+        if (err.type === 'unavailable-id') {
+            isDirectory = false;
+            try { directoryPeer.destroy(); } catch { }
             becomeFeedClient();
-        }else if(err.type==='peer-unavailable'){
+        } else if (err.type === 'peer-unavailable') {
             // ignore
-        }else{
-            updateFeedStatus();
-        }
+        } else { updateFeedStatus(); }
     });
-    directoryPeer.on('disconnected',()=>{
-        try{directoryPeer.reconnect();}catch(e){}
-    });
+    directoryPeer.on('disconnected', () => { try { directoryPeer.reconnect(); } catch (e) { } });
 }
 
-function becomeFeedClient(){
-    isDirectory=false;
-    try{directoryPeer=new Peer({debug:0});}catch(e){return;}
-    directoryPeer.on('open',()=>{
-        feedConn=directoryPeer.connect(DIR_ID,{reliable:true});
-        feedConn.on('open',()=>{
-            feedConn.send(JSON.stringify({type:'get_feed'}));
-            feedConn.send(JSON.stringify({type:'get_rooms'}));
+function becomeFeedClient() {
+    isDirectory = false;
+    try { directoryPeer = new Peer({ debug: 0 }); } catch (e) { return; }
+    directoryPeer.on('open', () => {
+        feedConn = directoryPeer.connect(DIR_ID, { reliable: true });
+        feedConn.on('open', () => {
+            feedConn.send(JSON.stringify({ type: 'get_feed' }));
+            feedConn.send(JSON.stringify({ type: 'get_rooms' }));
             updateFeedStatus();
         });
-        feedConn.on('data',data=>{
-            try{
-                const msg=typeof data==='string'?JSON.parse(data):data;
-                if(msg.type==='feed_data'){
-                    globalFeed=msg.posts||[];
-                    // Merge with local cache
-                    const db=getDB();
-                    const localIds=new Set(globalFeed.map(p=>p.id));
-                    db.feedCache.forEach(p=>{if(!localIds.has(p.id))globalFeed.push(p);});
-                    globalFeed.sort((a,b)=>b.time-a.time);
-                    if(globalFeed.length>200)globalFeed.length=200;
-                    db.feedCache=globalFeed;saveDB(db);
+        feedConn.on('data', data => {
+            try {
+                const msg = typeof data === 'string' ? JSON.parse(data) : data;
+                if (msg.type === 'feed_data') {
+                    globalFeed = msg.posts || [];
+                    const db = getDB();
+                    const localIds = new Set(globalFeed.map(p => p.id));
+                    db.feedCache.forEach(p => { if (!localIds.has(p.id)) globalFeed.push(p); });
+                    globalFeed.sort((a, b) => b.time - a.time);
+                    if (globalFeed.length > 200) globalFeed.length = 200;
+                    db.feedCache = globalFeed; saveDB(db);
                     renderFeed();
-                }else if(msg.type==='new_post'){
-                    if(!globalFeed.some(p=>p.id===msg.post.id)){
+                } else if (msg.type === 'new_post') {
+                    if (!globalFeed.some(p => p.id === msg.post.id)) {
                         globalFeed.unshift(msg.post);
-                        if(globalFeed.length>200)globalFeed.length=200;
-                        const db=getDB();db.feedCache=globalFeed;saveDB(db);
+                        if (globalFeed.length > 200) globalFeed.length = 200;
+                        const db = getDB(); db.feedCache = globalFeed; saveDB(db);
                         renderFeed();
-                        if(msg.post.authorId!==currentUser.id)notify('New post from '+msg.post.nick,msg.post.text.slice(0,80));
+                        if (msg.post.authorId !== currentUser.id) notify('New post from ' + msg.post.nick, msg.post.text.slice(0, 80));
                     }
-                }else if(msg.type==='update_post'){
-                    const idx=globalFeed.findIndex(p=>p.id===msg.post.id);
-                    if(idx!==-1){globalFeed[idx]=msg.post;const db=getDB();db.feedCache=globalFeed;saveDB(db);renderFeed();}
-                }else if(msg.type==='delete_post'){
-                    globalFeed=globalFeed.filter(p=>p.id!==msg.postId);
-                    const db=getDB();db.feedCache=globalFeed;saveDB(db);
+                } else if (msg.type === 'update_post') {
+                    const idx = globalFeed.findIndex(p => p.id === msg.post.id);
+                    if (idx !== -1) { globalFeed[idx] = msg.post; const db = getDB(); db.feedCache = globalFeed; saveDB(db); renderFeed(); }
+                } else if (msg.type === 'delete_post') {
+                    globalFeed = globalFeed.filter(p => p.id !== msg.postId);
+                    const db = getDB(); db.feedCache = globalFeed; saveDB(db);
                     renderFeed();
-                }else if(msg.type==='room_list'){
-                    renderPublicRooms(msg.rooms||[]);
+                } else if (msg.type === 'room_list') {
+                    renderPublicRooms(msg.rooms || []);
                 }
-            }catch(e){}
+            } catch (e) { }
         });
-        feedConn.on('close',()=>{
-            feedConn=null;updateFeedStatus();
-            scheduleReconnect();
-        });
-        feedConn.on('error',()=>{
-            feedConn=null;updateFeedStatus();
-            scheduleReconnect();
-        });
+        feedConn.on('close', () => { feedConn = null; updateFeedStatus(); scheduleReconnect(); });
+        feedConn.on('error', () => { feedConn = null; updateFeedStatus(); scheduleReconnect(); });
     });
-    directoryPeer.on('error',err=>{
-        if(err.type==='unavailable-id'){
-            // Try to become directory ourselves
-            try{directoryPeer.destroy();}catch{}
-            initBackgroundPeer();
-        }
+    directoryPeer.on('error', err => {
+        if (err.type === 'unavailable-id') { try { directoryPeer.destroy(); } catch { } initBackgroundPeer(); }
         updateFeedStatus();
     });
 }
 
-function scheduleReconnect(){
-    if(dirRetryTimer)clearTimeout(dirRetryTimer);
-    dirRetryTimer=setTimeout(()=>{
-        if(!isDirectory&&(!feedConn||!feedConn.open)){
-            becomeFeedClient();
-        }
-    },3000);
+function scheduleReconnect() {
+    if (dirRetryTimer) clearTimeout(dirRetryTimer);
+    dirRetryTimer = setTimeout(() => { if (!isDirectory && (!feedConn || !feedConn.open)) becomeFeedClient(); }, 3000);
 }
 
-function broadcastToFeed(msg){
-    if(isDirectory){
-        activeFeedConns.forEach(c=>{if(c.open)c.send(JSON.stringify(msg));});
-    }else if(feedConn&&feedConn.open){
-        feedConn.send(JSON.stringify(msg));
-    }
+function broadcastToFeed(msg) {
+    if (isDirectory) activeFeedConns.forEach(c => { if (c.open) c.send(JSON.stringify(msg)); });
+    else if (feedConn && feedConn.open) feedConn.send(JSON.stringify(msg));
 }
 
-function postMessage(){
-    const input=document.getElementById('postInput');
-    const text=input.value.trim();
-    if(!text&&!currentPostAttachment)return;
-    const post={
-        id:'p_'+Date.now()+'_'+Math.random().toString(36).slice(2,6),
-        authorId:currentUser.id,
-        nick:currentUser.nick,
-        email:currentUser.email,
-        text:text,
-        attachment:currentPostAttachment,
-        time:Date.now(),
-        likes:0,dislikes:0,
-        likedBy:[],dislikedBy:[],
-        replies:[]
-    };
-    input.value='';
-    currentPostAttachment=null;renderPostAttachmentPreview();
+function postMessage() {
+    const input = document.getElementById('postInput');
+    const text = input.value.trim();
+    const att = pendingAttachment && pendingAttachment.context === 'post' ? pendingAttachment : null;
+    if (!text && !att) return;
     
-    const db=getDB();
-    db.myPosts.unshift({...post});
+    const post = {
+        id: 'p_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+        authorId: currentUser.id, nick: currentUser.nick, email: currentUser.email,
+        text: text, attachment: att, time: Date.now(),
+        likes: 0, dislikes: 0, likedBy: [], dislikedBy: [], replies: []
+    };
+    input.value = '';
+    if (att) clearAttachment('post');
+    
+    const db = getDB();
+    db.myPosts.unshift({ ...post });
     saveDB(db);
     
     globalFeed.unshift(post);
-    if(globalFeed.length>200)globalFeed.length=200;
-    db.feedCache=globalFeed;saveDB(db);
+    if (globalFeed.length > 200) globalFeed.length = 200;
+    db.feedCache = globalFeed; saveDB(db);
     
-    updateInterestProfile(text,2);
-    renderFeed();renderMyPosts();
-    broadcastToFeed({type:'new_post',post});
-    showToast('Posted!','success');
+    updateInterestProfile(text, 2);
+    renderFeed(); renderMyPosts();
+    broadcastToFeed({ type: 'new_post', post });
+    showToast('Posted!', 'success');
 }
 
-function renderFeed(){
-    const el=document.getElementById('feedList');
-    if(!el)return;
-    const db=getDB();
-    const sorted=[...globalFeed].sort((a,b)=>scorePost(b)-scorePost(a));
-    if(sorted.length===0){
-        el.innerHTML='<div class="empty-state"><div class="empty-state-icon">~</div><div class="empty-state-text">No posts yet</div><div class="empty-state-sub">Be the first to share something!</div></div>';
+function renderFeed() {
+    const el = document.getElementById('feedList');
+    if (!el) return;
+    const sorted = [...globalFeed].sort((a, b) => scorePost(b) - scorePost(a));
+    if (sorted.length === 0) {
+        el.innerHTML = '<div class="empty-state"><div class="empty-state-icon">~</div><div class="empty-state-text">No posts yet</div><div class="empty-state-sub">Be the first to share something!</div></div>';
         return;
     }
-    el.innerHTML=sorted.map(p=>renderPostCard(p,false)).join('');
+    el.innerHTML = sorted.map(p => renderPostCard(p, false)).join('');
     attachPostHandlers(el);
 }
 
-function renderMyPosts(){
-    const el=document.getElementById('myPostsList');
-    if(!el)return;
-    const db=getDB();
-    if(db.myPosts.length===0){
-        el.innerHTML='<div class="empty-state"><div class="empty-state-icon">~</div><div class="empty-state-text">You haven\'t posted yet</div><div class="empty-state-sub">Share something on the Global Feed!</div></div>';
+function renderMyPosts() {
+    const el = document.getElementById('myPostsList');
+    if (!el) return;
+    const db = getDB();
+    if (db.myPosts.length === 0) {
+        el.innerHTML = '<div class="empty-state"><div class="empty-state-icon">~</div><div class="empty-state-text">You haven\'t posted yet</div><div class="empty-state-sub">Share something on the Global Feed!</div></div>';
         return;
     }
-    el.innerHTML=db.myPosts.map(p=>renderPostCard(p,true)).join('');
+    el.innerHTML = db.myPosts.map(p => renderPostCard(p, true)).join('');
     attachPostHandlers(el);
 }
 
-function renderPostCard(p,isMyPost){
-    const db=getDB();
-    const liked=db.likedPosts.includes(p.id);
-    const disliked=db.dislikedPosts.includes(p.id);
-    const canDelete=isMyPost||p.authorId===currentUser.id;
-    const repliesHtml=(p.replies||[]).map(r=>`
+function renderPostCard(p, isMyPost) {
+    const db = getDB();
+    const liked = db.likedPosts.includes(p.id);
+    const disliked = db.dislikedPosts.includes(p.id);
+    const canDelete = isMyPost || p.authorId === currentUser.id;
+    const repliesHtml = (p.replies || []).map(r => `
         <div class="reply-card">
             <div class="reply-header">
                 <span class="reply-author" onclick="viewUserProfile('${escapeHtml(r.authorId)}','${escapeHtml(r.nick)}')">${escapeHtml(r.nick)}</span>
@@ -1198,19 +1204,19 @@ function renderPostCard(p,isMyPost){
                     <div class="post-text">${escapeHtml(p.text)}</div>
                     ${renderAttachment(p.attachment)}
                     <div class="post-actions">
-                        <button class="action-btn ${liked?'active-like':''}" data-act="like" data-pid="${p.id}">
-                            <svg viewBox="0 0 24 24" fill="${liked?'currentColor':'none'}" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path></svg>
-                            ${p.likes||0}
+                        <button class="action-btn ${liked ? 'active-like' : ''}" data-act="like" data-pid="${p.id}">
+                            <svg viewBox="0 0 24 24" fill="${liked ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path></svg>
+                            ${p.likes || 0}
                         </button>
-                        <button class="action-btn ${disliked?'active-dislike':''}" data-act="dislike" data-pid="${p.id}">
-                            <svg viewBox="0 0 24 24" fill="${disliked?'currentColor':'none'}" stroke="currentColor" stroke-width="2"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"></path></svg>
-                            ${p.dislikes||0}
+                        <button class="action-btn ${disliked ? 'active-dislike' : ''}" data-act="dislike" data-pid="${p.id}">
+                            <svg viewBox="0 0 24 24" fill="${disliked ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"></path></svg>
+                            ${p.dislikes || 0}
                         </button>
                         <button class="action-btn" data-act="reply" data-pid="${p.id}">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
-                            ${(p.replies||[]).length}
+                            ${(p.replies || []).length}
                         </button>
-                        ${canDelete?'<button class="action-btn" data-act="delete" data-pid="'+p.id+'" style="margin-left:auto;color:var(--danger);border-color:var(--danger);">Delete</button>':''}
+                        ${canDelete ? '<button class="action-btn" data-act="delete" data-pid="' + p.id + '" style="margin-left:auto;color:var(--danger);border-color:var(--danger);">Delete</button>' : ''}
                     </div>
                     <div class="reply-section hidden" id="replies_${p.id}">
                         ${repliesHtml}
@@ -1224,175 +1230,172 @@ function renderPostCard(p,isMyPost){
         </div>`;
 }
 
-function attachPostHandlers(el){
-    el.querySelectorAll('.action-btn[data-act]').forEach(btn=>{
-        btn.onclick=()=>{
-            const act=btn.dataset.act;
-            const pid=btn.dataset.pid;
-            if(act==='like')handleInteraction(pid,'like');
-            else if(act==='dislike')handleInteraction(pid,'dislike');
-            else if(act==='reply')toggleReplyInput(pid);
-            else if(act==='delete')deletePost(pid);
+function attachPostHandlers(el) {
+    el.querySelectorAll('.action-btn[data-act]').forEach(btn => {
+        btn.onclick = () => {
+            const act = btn.dataset.act;
+            const pid = btn.dataset.pid;
+            if (act === 'like') handleInteraction(pid, 'like');
+            else if (act === 'dislike') handleInteraction(pid, 'dislike');
+            else if (act === 'reply') toggleReplyInput(pid);
+            else if (act === 'delete') deletePost(pid);
         };
     });
 }
 
-function handleInteraction(postId,type){
-    const db=getDB();
-    const post=globalFeed.find(p=>p.id===postId)||db.myPosts.find(p=>p.id===postId);
-    if(!post)return;
-    if(!post.likedBy)post.likedBy=[];
-    if(!post.dislikedBy)post.dislikedBy=[];
+function handleInteraction(postId, type) {
+    const db = getDB();
+    const post = globalFeed.find(p => p.id === postId) || db.myPosts.find(p => p.id === postId);
+    if (!post) return;
+    if (!post.likedBy) post.likedBy = [];
+    if (!post.dislikedBy) post.dislikedBy = [];
     
-    if(type==='like'){
-        if(db.likedPosts.includes(postId)){
-            db.likedPosts=db.likedPosts.filter(id=>id!==postId);
-            post.likes=Math.max(0,(post.likes||0)-1);
-            post.likedBy=post.likedBy.filter(id=>id!==currentUser.id);
-            updateInterestProfile(post.text,-1);
-        }else{
+    if (type === 'like') {
+        if (db.likedPosts.includes(postId)) {
+            db.likedPosts = db.likedPosts.filter(id => id !== postId);
+            post.likes = Math.max(0, (post.likes || 0) - 1);
+            post.likedBy = post.likedBy.filter(id => id !== currentUser.id);
+            updateInterestProfile(post.text, -1);
+        } else {
             db.likedPosts.push(postId);
-            post.likes=(post.likes||0)+1;
+            post.likes = (post.likes || 0) + 1;
             post.likedBy.push(currentUser.id);
-            updateInterestProfile(post.text,2);
-            if(db.dislikedPosts.includes(postId)){
-                db.dislikedPosts=db.dislikedPosts.filter(id=>id!==postId);
-                post.dislikes=Math.max(0,(post.dislikes||0)-1);
-                post.dislikedBy=post.dislikedBy.filter(id=>id!==currentUser.id);
+            updateInterestProfile(post.text, 2);
+            if (db.dislikedPosts.includes(postId)) {
+                db.dislikedPosts = db.dislikedPosts.filter(id => id !== postId);
+                post.dislikes = Math.max(0, (post.dislikes || 0) - 1);
+                post.dislikedBy = post.dislikedBy.filter(id => id !== currentUser.id);
             }
         }
-    }else if(type==='dislike'){
-        if(db.dislikedPosts.includes(postId)){
-            db.dislikedPosts=db.dislikedPosts.filter(id=>id!==postId);
-            post.dislikes=Math.max(0,(post.dislikes||0)-1);
-            post.dislikedBy=post.dislikedBy.filter(id=>id!==currentUser.id);
-            updateInterestProfile(post.text,1);
-        }else{
+    } else if (type === 'dislike') {
+        if (db.dislikedPosts.includes(postId)) {
+            db.dislikedPosts = db.dislikedPosts.filter(id => id !== postId);
+            post.dislikes = Math.max(0, (post.dislikes || 0) - 1);
+            post.dislikedBy = post.dislikedBy.filter(id => id !== currentUser.id);
+            updateInterestProfile(post.text, 1);
+        } else {
             db.dislikedPosts.push(postId);
-            post.dislikes=(post.dislikes||0)+1;
+            post.dislikes = (post.dislikes || 0) + 1;
             post.dislikedBy.push(currentUser.id);
-            updateInterestProfile(post.text,-2);
-            if(db.likedPosts.includes(postId)){
-                db.likedPosts=db.likedPosts.filter(id=>id!==postId);
-                post.likes=Math.max(0,(post.likes||0)-1);
-                post.likedBy=post.likedBy.filter(id=>id!==currentUser.id);
+            updateInterestProfile(post.text, -2);
+            if (db.likedPosts.includes(postId)) {
+                db.likedPosts = db.likedPosts.filter(id => id !== postId);
+                post.likes = Math.max(0, (post.likes || 0) - 1);
+                post.likedBy = post.likedBy.filter(id => id !== currentUser.id);
             }
         }
     }
     saveDB(db);
-    // Sync to all
-    broadcastToFeed({type:'update_post',post});
-    // Update local feed cache
-    const d2=getDB();d2.feedCache=globalFeed;saveDB(d2);
-    renderFeed();renderMyPosts();
+    broadcastToFeed({ type: 'update_post', post });
+    const d2 = getDB(); d2.feedCache = globalFeed; saveDB(d2);
+    renderFeed(); renderMyPosts();
 }
 
-function toggleReplyInput(pid){
-    const el=document.getElementById('replies_'+pid);
-    if(el)el.classList.toggle('hidden');
+function toggleReplyInput(pid) {
+    const el = document.getElementById('replies_' + pid);
+    if (el) el.classList.toggle('hidden');
 }
-function sendReply(pid){
-    const input=document.getElementById('replyText_'+pid);
-    if(!input)return;
-    const text=input.value.trim();
-    if(!text)return;
-    const post=globalFeed.find(p=>p.id===pid);
-    if(!post)return;
-    if(!post.replies)post.replies=[];
-    post.replies.push({authorId:currentUser.id,nick:currentUser.nick,text,time:Date.now()});
-    updateInterestProfile(post.text,3);
-    input.value='';
-    document.getElementById('replies_'+pid).classList.add('hidden');
-    broadcastToFeed({type:'update_post',post});
-    const db=getDB();db.feedCache=globalFeed;saveDB(db);
+function sendReply(pid) {
+    const input = document.getElementById('replyText_' + pid);
+    if (!input) return;
+    const text = input.value.trim();
+    if (!text) return;
+    const post = globalFeed.find(p => p.id === pid);
+    if (!post) return;
+    if (!post.replies) post.replies = [];
+    post.replies.push({ authorId: currentUser.id, nick: currentUser.nick, text, time: Date.now() });
+    updateInterestProfile(post.text, 3);
+    input.value = '';
+    document.getElementById('replies_' + pid).classList.add('hidden');
+    broadcastToFeed({ type: 'update_post', post });
+    const db = getDB(); db.feedCache = globalFeed; saveDB(db);
     renderFeed();
 }
-function deletePost(pid){
-    showModal('Delete Post','<p>Are you sure you want to delete this post?</p>',[
-        {label:'Cancel',class:'btn-secondary'},
-        {label:'Delete',class:'btn-danger',onClick:()=>{
-            globalFeed=globalFeed.filter(p=>p.id!==pid);
-            const db=getDB();
-            db.myPosts=db.myPosts.filter(p=>p.id!==pid);
-            db.feedCache=globalFeed;saveDB(db);
-            broadcastToFeed({type:'delete_post',postId:pid});
-            renderFeed();renderMyPosts();
-            showToast('Post deleted','success');
+function deletePost(pid) {
+    showModal('Delete Post', '<p>Are you sure you want to delete this post?</p>', [
+        { label: 'Cancel', class: 'btn-secondary' },
+        { label: 'Delete', class: 'btn-danger', onClick: () => {
+            globalFeed = globalFeed.filter(p => p.id !== pid);
+            const db = getDB();
+            db.myPosts = db.myPosts.filter(p => p.id !== pid);
+            db.feedCache = globalFeed; saveDB(db);
+            broadcastToFeed({ type: 'delete_post', postId: pid });
+            renderFeed(); renderMyPosts();
+            showToast('Post deleted', 'success');
         }}
     ]);
 }
 
-// ============ PROFILE / ACCOUNT VIEW ============
-let viewingUserId=null;
-function viewUserProfile(userId,nick){
-    viewingUserId=userId;
-    document.getElementById('profileHeaderTitle').textContent=nick+"'s Profile";
+// ============ PROFILE ============
+let viewingUserId = null;
+function viewUserProfile(userId, nick) {
+    viewingUserId = userId;
+    document.getElementById('profileHeaderTitle').textContent = nick + "'s Profile";
     switchView('profile');
     renderProfile();
 }
-function renderProfile(){
-    const el=document.getElementById('profileContent');
-    const headerActions=document.getElementById('profileHeaderActions');
-    if(!el)return;
-    const db=getDB();
+function renderProfile() {
+    const el = document.getElementById('profileContent');
+    const headerActions = document.getElementById('profileHeaderActions');
+    if (!el) return;
+    const db = getDB();
     
-    let user,userId,isMe=false;
-    if(viewingUserId&&viewingUserId!==currentUser.id){
-        userId=viewingUserId;
-        // Find user info from posts or following
-        user=db.users[userId];
-        if(!user){
-            const post=globalFeed.find(p=>p.authorId===userId);
-            user={id:userId,nick:post?post.nick:'Unknown User',email:null,bio:'',createdAt:null};
+    let user, userId, isMe = false;
+    if (viewingUserId && viewingUserId !== currentUser.id) {
+        userId = viewingUserId;
+        user = db.users[userId];
+        if (!user) {
+            const post = globalFeed.find(p => p.authorId === userId);
+            user = { id: userId, nick: post ? post.nick : 'Unknown User', email: null, bio: '', createdAt: null };
         }
-        isMe=false;
-    }else{
-        user=currentUser;
-        userId=currentUser.id;
-        viewingUserId=null;
-        document.getElementById('profileHeaderTitle').textContent='My Profile';
-        isMe=true;
+        isMe = false;
+    } else {
+        user = currentUser;
+        userId = currentUser.id;
+        viewingUserId = null;
+        document.getElementById('profileHeaderTitle').textContent = 'My Profile';
+        isMe = true;
     }
     
-    const userPosts=globalFeed.filter(p=>p.authorId===userId);
-    const followingCount=db.following.filter(f=>f.peerId===userId).length;
-    const followersCount=(user.followers||[]).length;
-    const isFollowing=db.following.some(f=>f.peerId===userId);
+    const userPosts = globalFeed.filter(p => p.authorId === userId);
+    const followingCount = db.following.filter(f => f.peerId === userId).length;
+    const followersCount = (user.followers || []).length;
+    const isFollowing = db.following.some(f => f.peerId === userId);
     
-    if(isMe){
-        headerActions.innerHTML=`<button class="btn btn-secondary btn-small" onclick="editProfile()">Edit</button>`;
-    }else{
-        headerActions.innerHTML=`<button class="btn ${isFollowing?'btn-secondary':'btn-primary'} btn-small" onclick="toggleFollow('${escapeHtml(userId)}','${escapeHtml(user.nick)}')">${isFollowing?'Following':'Follow'}</button><button class="btn btn-secondary btn-small" onclick="startDM('${escapeHtml(userId)}','${escapeHtml(user.nick)}')">Message</button>`;
+    if (isMe) {
+        headerActions.innerHTML = `<button class="btn btn-secondary btn-small" onclick="editProfile()">Edit</button>`;
+    } else {
+        headerActions.innerHTML = `<button class="btn ${isFollowing ? 'btn-secondary' : 'btn-primary'} btn-small" onclick="toggleFollow('${escapeHtml(userId)}','${escapeHtml(user.nick)}')">${isFollowing ? 'Following' : 'Follow'}</button><button class="btn btn-secondary btn-small" onclick="startDM('${escapeHtml(userId)}','${escapeHtml(user.nick)}')">Message</button>`;
     }
     
-    let postsHtml='';
-    if(userPosts.length===0){
-        postsHtml='<div class="empty-state"><div class="empty-state-text">No posts yet</div></div>';
-    }else{
-        postsHtml=userPosts.sort((a,b)=>b.time-a.time).map(p=>renderPostCard(p,p.authorId===currentUser.id)).join('');
+    let postsHtml = '';
+    if (userPosts.length === 0) {
+        postsHtml = '<div class="empty-state"><div class="empty-state-text">No posts yet</div></div>';
+    } else {
+        postsHtml = userPosts.sort((a, b) => b.time - a.time).map(p => renderPostCard(p, p.authorId === currentUser.id)).join('');
     }
     
-    el.innerHTML=`
+    el.innerHTML = `
         <div class="profile-header-card">
             <div class="profile-banner"></div>
             <div class="profile-info">
                 <div class="user-avatar">${escapeHtml(user.nick.charAt(0).toUpperCase())}</div>
                 <div class="profile-details">
                     <div class="profile-name">${escapeHtml(user.nick)}</div>
-                    <div class="profile-email">${user.email?escapeHtml(user.email):(user.isGuest?'Guest account':'')}</div>
+                    <div class="profile-email">${user.email ? escapeHtml(user.email) : (user.isGuest ? 'Guest account' : '')}</div>
                     <div class="profile-stats">
                         <div class="stat"><div class="stat-num">${userPosts.length}</div><div class="stat-label">Posts</div></div>
-                        <div class="stat"><div class="stat-num">${db.following.filter(f=>f.peerId===userId).length||0}</div><div class="stat-label">Following</div></div>
+                        <div class="stat"><div class="stat-num">${followingCount || 0}</div><div class="stat-label">Following</div></div>
                         <div class="stat"><div class="stat-num">${followersCount}</div><div class="stat-label">Followers</div></div>
                     </div>
                     <div class="profile-actions">
-                        ${isMe?`<button class="btn btn-secondary btn-small" onclick="copyMyId()">Copy My ID</button>`:`<button class="btn btn-secondary btn-small" onclick="copyText('${escapeHtml(userId)}')">Copy ID</button>`}
+                        ${isMe ? `<button class="btn btn-secondary btn-small" onclick="copyMyId()">Copy My ID</button>` : `<button class="btn btn-secondary btn-small" onclick="copyText('${escapeHtml(userId)}')">Copy ID</button>`}
                     </div>
                 </div>
             </div>
             <div style="padding:0 18px 18px;">
                 <h3 style="margin-bottom:8px;font-size:1rem;">Bio</h3>
-                <p style="font-size:0.9rem;color:var(--text-normal);">${user.bio?escapeHtml(user.bio):'No bio yet.'}</p>
+                <p style="font-size:0.9rem;color:var(--text-normal);">${user.bio ? escapeHtml(user.bio) : 'No bio yet.'}</p>
             </div>
         </div>
         <h3 style="margin-bottom:12px;">Posts by ${escapeHtml(user.nick)}</h3>
@@ -1400,214 +1403,212 @@ function renderProfile(){
     `;
     attachPostHandlers(el);
 }
-function editProfile(){
-    const db=getDB();
-    const user=db.users[currentUser.id]||currentUser;
-    showModal('Edit Profile',`
+function editProfile() {
+    const db = getDB();
+    const user = db.users[currentUser.id] || currentUser;
+    showModal('Edit Profile', `
         <div class="form-group"><label>Nickname</label><input type="text" id="editNick" value="${escapeHtml(currentUser.nick)}"></div>
-        ${!currentUser.isGuest?`<div class="form-group"><label>Bio</label><textarea class="input-field" id="editBio" rows="3">${escapeHtml(user.bio||'')}</textarea></div>`:'<p class="text-muted">Guest accounts can only change nickname.</p>'}
-    `,[
-        {label:'Cancel',class:'btn-secondary'},
-        {label:'Save',class:'btn-primary',onClick:()=>{
-            const newNick=document.getElementById('editNick').value.trim();
-            if(!newNick){showToast('Nickname cannot be empty','error');return;}
-            currentUser.nick=newNick;
-            if(!currentUser.isGuest&&db.users[currentUser.id]){
-                db.users[currentUser.id].nick=newNick;
-                db.users[currentUser.id].bio=document.getElementById('editBio')?.value.trim()||'';
+        ${!currentUser.isGuest ? `<div class="form-group"><label>Bio</label><textarea class="input-field" id="editBio" rows="3">${escapeHtml(user.bio || '')}</textarea></div>` : '<p class="text-muted">Guest accounts can only change nickname.</p>'}
+    `, [
+        { label: 'Cancel', class: 'btn-secondary' },
+        { label: 'Save', class: 'btn-primary', onClick: () => {
+            const newNick = document.getElementById('editNick').value.trim();
+            if (!newNick) { showToast('Nickname cannot be empty', 'error'); return; }
+            currentUser.nick = newNick;
+            if (!currentUser.isGuest && db.users[currentUser.id]) {
+                db.users[currentUser.id].nick = newNick;
+                db.users[currentUser.id].bio = document.getElementById('editBio')?.value.trim() || '';
             }
             saveDB(db);
-            document.getElementById('userName').textContent=newNick;
-            document.getElementById('userAvatar').textContent=newNick.charAt(0).toUpperCase();
+            document.getElementById('userName').textContent = newNick;
+            document.getElementById('userAvatar').textContent = newNick.charAt(0).toUpperCase();
             renderProfile();
-            showToast('Profile updated','success');
+            showToast('Profile updated', 'success');
         }}
     ]);
 }
-function copyMyId(){copyText(currentUser.id);}
-function copyText(txt){
-    navigator.clipboard.writeText(txt).then(()=>showToast('Copied!','success')).catch(()=>showToast('Copy failed','error'));
+function copyMyId() { copyText(currentUser.id); }
+function copyText(txt) {
+    navigator.clipboard.writeText(txt).then(() => showToast('Copied!', 'success')).catch(() => showToast('Copy failed', 'error'));
 }
 
-// ============ FOLLOWING ============
-function toggleFollow(userId,nick){
-    const db=getDB();
-    const idx=db.following.findIndex(f=>f.peerId===userId);
-    if(idx>=0){
-        db.following.splice(idx,1);
+// ============ FOLLOWING & PROFILE P2P ============
+function toggleFollow(userId, nick) {
+    const db = getDB();
+    const idx = db.following.findIndex(f => f.peerId === userId);
+    if (idx >= 0) {
+        db.following.splice(idx, 1);
         saveDB(db);
         renderProfile();
-        showToast('Unfollowed '+nick,'info');
-    }else{
-        db.following.push({peerId:userId,nick,email:null});
+        showToast('Unfollowed ' + nick, 'info');
+    } else {
+        db.following.push({ peerId: userId, nick, email: null });
         saveDB(db);
-        // Notify via P2P
         connectToPeer(userId);
-        showToast('Now following '+nick,'success');
+        let conn = peerConnections[userId];
+        if (conn && conn.open) {
+            conn.send(JSON.stringify({ type: 'follow', fromId: currentUser.id, fromNick: currentUser.nick }));
+        }
+        showToast('Now following ' + nick, 'success');
         renderProfile();
     }
 }
 
-// ============ PROFILE PEER (DMs & Follow) ============
-let profilePeer=null;
-let peerConnections={}; // peerId -> conn
+let profilePeer = null;
+let peerConnections = {}; // peerId -> conn
 
-function initProfilePeer(){
-    if(!myPeerId)return;
-    try{
-        profilePeer=new Peer(myPeerId,{debug:0});
-    }catch(e){return;}
-    profilePeer.on('connection',conn=>{
-        conn.on('data',async data=>{
-            try{
-                const msg=typeof data==='string'?JSON.parse(data):data;
-                if(msg.type==='follow'){
-                    const db=getDB();
-                    if(!db.followers.some(f=>f.peerId===msg.fromId)){
-                        db.followers.push({peerId:msg.fromId,nick:msg.fromNick});
+function initProfilePeer() {
+    if (!myPeerId) return;
+    try { profilePeer = new Peer(myPeerId, { debug: 0 }); } catch (e) { return; }
+    
+    profilePeer.on('connection', conn => {
+        conn.on('data', data => {
+            try {
+                const msg = typeof data === 'string' ? JSON.parse(data) : data;
+                if (msg.type === 'follow') {
+                    const db = getDB();
+                    if (!db.followers.some(f => f.peerId === msg.fromId)) {
+                        db.followers.push({ peerId: msg.fromId, nick: msg.fromNick });
                         saveDB(db);
-                        notify('New Follower',msg.fromNick+' is now following you');
+                        notify('New Follower', msg.fromNick + ' is now following you');
                     }
-                    conn.send(JSON.stringify({type:'follow_ack',fromId:currentUser.id,fromNick:currentUser.nick}));
-                }else if(msg.type==='dm'){
-                    const db=getDB();
-                    if(!db.dmHistory[msg.fromId])db.dmHistory[msg.fromId]={peerId:msg.fromId,nick:msg.fromNick,messages:[]};
-                    db.dmHistory[msg.fromId].nick=msg.fromNick;
-                    db.dmHistory[msg.fromId].messages.push({from:msg.fromId,text:msg.text,attachment:msg.attachment,time:Date.now(),isSelf:false});
+                    conn.send(JSON.stringify({ type: 'follow_ack', fromId: currentUser.id, fromNick: currentUser.nick }));
+                } else if (msg.type === 'follow_ack') {
+                    const db = getDB();
+                    if (!db.followers.some(f => f.peerId === msg.fromId)) {
+                        db.followers.push({ peerId: msg.fromId, nick: msg.fromNick });
+                        saveDB(db);
+                    }
+                } else if (msg.type === 'dm') {
+                    const db = getDB();
+                    if (!db.dmHistory[msg.fromId]) db.dmHistory[msg.fromId] = { peerId: msg.fromId, nick: msg.fromNick, messages: [] };
+                    db.dmHistory[msg.fromId].nick = msg.fromNick;
+                    db.dmHistory[msg.fromId].messages.push({ from: msg.fromId, text: msg.text, attachment: msg.attachment, time: Date.now(), isSelf: false });
                     saveDB(db);
-                    if(activeDMId===msg.fromId)renderDMMessages(msg.fromId);
-                    else{
-                        notify('New DM from '+msg.fromNick,msg.text.slice(0,80));
-                        renderDMList();
-                    }
+                    if (activeDMId === msg.fromId) renderDMMessages(msg.fromId);
+                    else { notify('New DM from ' + msg.fromNick, msg.text.slice(0, 80)); renderDMList(); }
                 }
-            }catch(e){}
+            } catch (e) { }
         });
-        conn.on('open',()=>{
-            peerConnections[conn.peer]=conn;
-        });
-        conn.on('close',()=>{delete peerConnections[conn.peer];});
-        conn.on('error',()=>{delete peerConnections[conn.peer];});
+        conn.on('open', () => { peerConnections[conn.peer] = conn; });
+        conn.on('close', () => { delete peerConnections[conn.peer]; });
+        conn.on('error', () => { delete peerConnections[conn.peer]; });
     });
-    profilePeer.on('error',err=>{
-        if(err.type==='unavailable-id'){
-            // Profile peer already exists (another tab)
-        }
+    
+    profilePeer.on('error', err => {
+        if (err.type === 'unavailable-id') { /* Profile peer already exists */ }
     });
 }
 
-function connectToPeer(peerId,nick){
-    if(peerId===currentUser.id)return;
-    if(peerConnections[peerId]&&peerConnections[peerId].open)return;
-    if(!profilePeer||profilePeer.destroyed)return;
-    try{
-        const conn=profilePeer.connect(peerId,{reliable:true});
-        conn.on('open',()=>{
-            peerConnections[peerId]=conn;
-            // If we have a pending follow, send it
-        });
-        conn.on('data',data=>{
-            try{
-                const msg=typeof data==='string'?JSON.parse(data):data;
-                if(msg.type==='follow_ack'){
-                    const db=getDB();
-                    if(!db.followers.some(f=>f.peerId===msg.fromId)){
-                        db.followers.push({peerId:msg.fromId,nick:msg.fromNick});
+function connectToPeer(peerId, nick) {
+    if (peerId === currentUser.id) return null;
+    if (peerConnections[peerId] && peerConnections[peerId].open) return peerConnections[peerId];
+    if (!profilePeer || profilePeer.destroyed) return null;
+    try {
+        const conn = profilePeer.connect(peerId, { reliable: true });
+        conn.on('open', () => { peerConnections[peerId] = conn; });
+        conn.on('data', data => {
+            try {
+                const msg = typeof data === 'string' ? JSON.parse(data) : data;
+                if (msg.type === 'follow_ack') {
+                    const db = getDB();
+                    if (!db.followers.some(f => f.peerId === msg.fromId)) {
+                        db.followers.push({ peerId: msg.fromId, nick: msg.fromNick });
                         saveDB(db);
                     }
-                }else if(msg.type==='dm'){
-                    const db=getDB();
-                    if(!db.dmHistory[msg.fromId])db.dmHistory[msg.fromId]={peerId:msg.fromId,nick:msg.fromNick,messages:[]};
-                    db.dmHistory[msg.fromId].nick=msg.fromNick;
-                    db.dmHistory[msg.fromId].messages.push({from:msg.fromId,text:msg.text,attachment:msg.attachment,time:Date.now(),isSelf:false});
+                } else if (msg.type === 'dm') {
+                    const db = getDB();
+                    if (!db.dmHistory[msg.fromId]) db.dmHistory[msg.fromId] = { peerId: msg.fromId, nick: msg.fromNick, messages: [] };
+                    db.dmHistory[msg.fromId].nick = msg.fromNick;
+                    db.dmHistory[msg.fromId].messages.push({ from: msg.fromId, text: msg.text, attachment: msg.attachment, time: Date.now(), isSelf: false });
                     saveDB(db);
-                    if(activeDMId===msg.fromId)renderDMMessages(msg.fromId);
-                    else{notify('New DM from '+msg.fromNick,msg.text.slice(0,80));renderDMList();}
+                    if (activeDMId === msg.fromId) renderDMMessages(msg.fromId);
+                    else { notify('New DM from ' + msg.fromNick, msg.text.slice(0, 80)); renderDMList(); }
                 }
-            }catch(e){}
+            } catch (e) { }
         });
-        conn.on('close',()=>{delete peerConnections[peerId];});
-        conn.on('error',()=>{delete peerConnections[peerId];});
+        conn.on('close', () => { delete peerConnections[peerId]; });
+        conn.on('error', () => { delete peerConnections[peerId]; });
+        peerConnections[peerId] = conn; // Optimistic assignment
         return conn;
-    }catch(e){return null;}
+    } catch (e) { return null; }
 }
 
 // ============ DMs ============
-let activeDMId=null;
-function renderDMList(){
-    const el=document.getElementById('dmList');
-    if(!el)return;
-    const db=getDB();
-    const dms=Object.values(db.dmHistory||{});
-    if(dms.length===0){
-        el.innerHTML='<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:0.85rem;">No conversations yet</div>';
+let activeDMId = null;
+function renderDMList() {
+    const el = document.getElementById('dmList');
+    if (!el) return;
+    const db = getDB();
+    const dms = Object.values(db.dmHistory || {});
+    if (dms.length === 0) {
+        el.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:0.85rem;">No conversations yet</div>';
         return;
     }
-    dms.sort((a,b)=>{
-        const am=a.messages.length?a.messages[a.messages.length-1].time:0;
-        const bm=b.messages.length?b.messages[b.messages.length-1].time:0;
-        return bm-am;
+    dms.sort((a, b) => {
+        const am = a.messages.length ? a.messages[a.messages.length - 1].time : 0;
+        const bm = b.messages.length ? b.messages[b.messages.length - 1].time : 0;
+        return bm - am;
     });
-    el.innerHTML=dms.map(dm=>{
-        const lastMsg=dm.messages.length?dm.messages[dm.messages.length-1]:null;
-        return `<div class="dm-item ${activeDMId===dm.peerId?'active':''}" onclick="openDM('${escapeHtml(dm.peerId)}')">
+    el.innerHTML = dms.map(dm => {
+        const lastMsg = dm.messages.length ? dm.messages[dm.messages.length - 1] : null;
+        return `<div class="dm-item ${activeDMId === dm.peerId ? 'active' : ''}" onclick="openDM('${escapeHtml(dm.peerId)}')">
             <div class="user-avatar">${escapeHtml(dm.nick.charAt(0).toUpperCase())}</div>
             <div class="dm-item-info">
                 <div class="dm-item-name">${escapeHtml(dm.nick)}</div>
-                <div class="dm-item-last">${lastMsg?escapeHtml((lastMsg.isSelf?'You: ':'')+lastMsg.text).slice(0,40):'No messages'}</div>
+                <div class="dm-item-last">${lastMsg ? escapeHtml((lastMsg.isSelf ? 'You: ' : '') + lastMsg.text).slice(0, 40) : 'No messages'}</div>
             </div>
         </div>`;
     }).join('');
 }
-function showNewDmModal(){
-    showModal('Start New DM',`
+function showNewDmModal() {
+    showModal('Start New DM', `
         <p class="text-muted">Enter the user's email or peer ID to start a direct message.</p>
         <div class="form-group"><label>User Email or ID</label><input type="text" id="newDmTarget" placeholder="user@example.com"></div>
-    `,[
-        {label:'Cancel',class:'btn-secondary'},
-        {label:'Start',class:'btn-primary',onClick:()=>{
-            const v=document.getElementById('newDmTarget').value.trim();
-            if(v)startDM(v,v);
+    `, [
+        { label: 'Cancel', class: 'btn-secondary' },
+        { label: 'Start', class: 'btn-primary', onClick: () => {
+            const v = document.getElementById('newDmTarget').value.trim();
+            if (v) startDM(v, v);
         }}
     ]);
 }
-function startDMById(){
-    const v=document.getElementById('newDmId').value.trim();
-    if(!v){showToast('Enter a user ID or email','error');return;}
-    startDM(v,v);
+function startDMById() {
+    const v = document.getElementById('newDmId').value.trim();
+    if (!v) { showToast('Enter a user ID or email', 'error'); return; }
+    startDM(v, v);
 }
-function startDM(peerId,nick){
-    // Convert email to peer ID
-    if(peerId.includes('@')){
-        const emailPeerId='yp_'+peerId.replace(/[^a-zA-Z0-9]/g,'');
-        openDM(emailPeerId,nick);
-    }else{
-        openDM(peerId,nick);
+function startDM(peerId, nick) {
+    if (peerId.includes('@')) {
+        const emailPeerId = 'yp_' + peerId.replace(/[^a-zA-Z0-9]/g, '');
+        openDM(emailPeerId, nick);
+    } else {
+        openDM(peerId, nick);
     }
 }
-function openDM(peerId,nick){
-    const db=getDB();
-    if(!db.dmHistory)db.dmHistory={};
-    if(!db.dmHistory[peerId]){
-        db.dmHistory[peerId]={peerId,nick,messages:[]};
+function openDM(peerId, nick) {
+    const db = getDB();
+    if (!db.dmHistory) db.dmHistory = {};
+    if (!db.dmHistory[peerId]) {
+        db.dmHistory[peerId] = { peerId, nick, messages: [] };
         saveDB(db);
-    }else{
-        db.dmHistory[peerId].nick=nick||db.dmHistory[peerId].nick;
+    } else {
+        db.dmHistory[peerId].nick = nick || db.dmHistory[peerId].nick;
         saveDB(db);
     }
-    activeDMId=peerId;
+    activeDMId = peerId;
     renderDMList();
     renderDMMessages(peerId);
-    if(!peerConnections[peerId]||!peerConnections[peerId].open){
-        connectToPeer(peerId,nick);
+    if (!peerConnections[peerId] || !peerConnections[peerId].open) {
+        connectToPeer(peerId, nick);
     }
 }
-function renderDMMessages(peerId){
-    const db=getDB();
-    const dm=db.dmHistory[peerId];
-    if(!dm)return;
-    const chatEl=document.getElementById('dmChatArea');
-    chatEl.innerHTML=`
+function renderDMMessages(peerId) {
+    const db = getDB();
+    const dm = db.dmHistory[peerId];
+    if (!dm) return;
+    const chatEl = document.getElementById('dmChatArea');
+    chatEl.innerHTML = `
         <div class="dm-chat-header">
             <div style="display:flex;align-items:center;gap:10px;">
                 <button class="btn-icon" onclick="closeDM()" style="display:none;" id="dmBackBtn">
@@ -1616,7 +1617,7 @@ function renderDMMessages(peerId){
                 <div class="user-avatar" style="width:32px;height:32px;font-size:0.85rem;">${escapeHtml(dm.nick.charAt(0).toUpperCase())}</div>
                 <div>
                     <div style="font-weight:700;">${escapeHtml(dm.nick)}</div>
-                    <div style="font-size:0.72rem;color:var(--text-muted);">${peerConnections[peerId]&&peerConnections[peerId].open?'Online':'Offline'}</div>
+                    <div style="font-size:0.72rem;color:var(--text-muted);">${peerConnections[peerId] && peerConnections[peerId].open ? 'Online' : 'Offline'}</div>
                 </div>
             </div>
             <button class="btn-icon" onclick="viewUserProfile('${escapeHtml(peerId)}','${escapeHtml(dm.nick)}')" title="View Profile">
@@ -1632,193 +1633,189 @@ function renderDMMessages(peerId){
             <input type="text" id="dmInput" placeholder="Type a message..." onkeydown="if(event.key==='Enter')sendDM()" style="flex:1;">
             <button class="btn btn-primary btn-small" onclick="sendDM()">Send</button>
         </div>`;
-    const msgsEl=document.getElementById('dmMessages');
-    dm.messages.forEach(m=>{
-        const div=document.createElement('div');
-        div.className='chat-msg'+(m.isSelf?' self':'');
-        let attHtml='';
-        if(m.attachment){
-            if(m.attachment.type.startsWith('image/'))attHtml=`<div class="chat-msg-attachment"><img src="${m.attachment.dataUrl}" onclick="viewImage('${m.attachment.dataUrl}')"></div>`;
-            else if(m.attachment.type.startsWith('video/'))attHtml=`<div class="chat-msg-attachment"><video src="${m.attachment.dataUrl}" controls></video></div>`;
-            else attHtml=`<div class="chat-msg-attachment"><a class="file-att" href="${m.attachment.dataUrl}" download="${escapeHtml(m.attachment.name)}" style="font-size:0.8rem;">${escapeHtml(m.attachment.name)}</a></div>`;
+    const msgsEl = document.getElementById('dmMessages');
+    dm.messages.forEach(m => {
+        const div = document.createElement('div');
+        div.className = 'chat-msg' + (m.isSelf ? ' self' : '');
+        let attHtml = '';
+        if (m.attachment) {
+            if (m.attachment.type.startsWith('image/')) attHtml = `<div class="chat-msg-attachment"><img src="${m.attachment.dataUrl}" onclick="viewImage('${m.attachment.dataUrl}')"></div>`;
+            else if (m.attachment.type.startsWith('video/')) attHtml = `<div class="chat-msg-attachment"><video src="${m.attachment.dataUrl}" controls></video></div>`;
+            else attHtml = `<div class="chat-msg-attachment"><a class="file-att" href="${m.attachment.dataUrl}" download="${escapeHtml(m.attachment.name)}" style="font-size:0.8rem;">${escapeHtml(m.attachment.name)}</a></div>`;
         }
-        div.innerHTML=`
-            <div class="user-avatar" style="width:32px;height:32px;font-size:0.8rem;">${escapeHtml((m.isSelf?currentUser.nick:dm.nick).charAt(0).toUpperCase())}</div>
+        div.innerHTML = `
+            <div class="user-avatar" style="width:32px;height:32px;font-size:0.8rem;">${escapeHtml((m.isSelf ? currentUser.nick : dm.nick).charAt(0).toUpperCase())}</div>
             <div>
-                ${!m.isSelf?`<div class="chat-msg-author">${escapeHtml(dm.nick)}</div>`:''}
+                ${!m.isSelf ? `<div class="chat-msg-author">${escapeHtml(dm.nick)}</div>` : ''}
                 <div class="chat-msg-bubble">${escapeHtml(m.text)}${attHtml}</div>
-                <div class="chat-msg-meta">${new Date(m.time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</div>
+                <div class="chat-msg-meta">${new Date(m.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
             </div>`;
         msgsEl.appendChild(div);
     });
-    msgsEl.scrollTop=msgsEl.scrollHeight;
-    // On mobile, show back button
-    if(window.innerWidth<=768)document.getElementById('dmBackBtn').style.display='flex';
-    document.getElementById('dmBackBtn').onclick=()=>{activeDMId=null;document.getElementById('dmChatArea').innerHTML='<div class="dm-empty"><div>Select a conversation</div></div>';document.getElementById('dmSidebar').classList.remove('mobile-open');};
+    msgsEl.scrollTop = msgsEl.scrollHeight;
+    if (window.innerWidth <= 768) document.getElementById('dmBackBtn').style.display = 'flex';
+    document.getElementById('dmBackBtn').onclick = () => {
+        activeDMId = null;
+        document.getElementById('dmChatArea').innerHTML = '<div class="dm-empty"><div>Select a conversation</div></div>';
+        document.getElementById('dmSidebar').classList.remove('mobile-open');
+    };
 }
-function closeDM(){
-    activeDMId=null;
-    document.getElementById('dmChatArea').innerHTML='<div class="dm-empty"><div style="font-size:2.5rem;opacity:0.3;">&#9993;</div><div>Select a conversation</div></div>';
+function closeDM() {
+    activeDMId = null;
+    document.getElementById('dmChatArea').innerHTML = '<div class="dm-empty"><div style="font-size:2.5rem;opacity:0.3;">&#9993;</div><div>Select a conversation</div></div>';
 }
-function sendDM(){
-    if(!activeDMId)return;
-    const input=document.getElementById('dmInput');
-    const text=input.value.trim();
-    if(!text&&!currentChatAttachment)return;
-    const db=getDB();
-    if(!db.dmHistory[activeDMId])return;
-    const msg={from:currentUser.id,text,attachment:currentChatAttachment,time:Date.now(),isSelf:true};
+function sendDM() {
+    if (!activeDMId) return;
+    const input = document.getElementById('dmInput');
+    const text = input.value.trim();
+    const att = pendingAttachment && pendingAttachment.context === 'chat' ? pendingAttachment : null;
+    if (!text && !att) return;
+    
+    const db = getDB();
+    if (!db.dmHistory[activeDMId]) return;
+    const msg = { from: currentUser.id, text, attachment: att, time: Date.now(), isSelf: true };
     db.dmHistory[activeDMId].messages.push(msg);
-    db.dmHistory[activeDMId].lastMessage=text;
+    db.dmHistory[activeDMId].lastMessage = text;
     saveDB(db);
     
-    // Send via P2P
-    let conn=peerConnections[activeDMId];
-    if(!conn||!conn.open){
-        connectToPeer(activeDMId,db.dmHistory[activeDMId].nick);
-        showToast('User may be offline. Message saved.','warning');
-    }else{
-        conn.send(JSON.stringify({type:'dm',fromId:currentUser.id,fromNick:currentUser.nick,text,attachment:currentChatAttachment}));
+    let conn = peerConnections[activeDMId];
+    if (!conn || !conn.open) {
+        connectToPeer(activeDMId, db.dmHistory[activeDMId].nick);
+        showToast('User may be offline. Message saved.', 'warning');
+    } else {
+        conn.send(JSON.stringify({ type: 'dm', fromId: currentUser.id, fromNick: currentUser.nick, text, attachment: att }));
     }
-    currentChatAttachment=null;
-    input.value='';
+    if (att) clearAttachment('chat');
+    input.value = '';
     renderDMMessages(activeDMId);
     renderDMList();
 }
 
 // ============ ROOMS ============
-let hostPeer=null,guestPeer=null,guestConn=null,hostConnections=[];
-let myRole=null,roomName=null,roomIsPrivate=false,roomCode='';
-let activePublicRooms=[];
+let hostPeer = null, guestPeer = null, guestConn = null, hostConnections = [];
+let myRole = null, roomName = null, roomIsPrivate = false, roomCode = '';
 
-function toggleHostCode(){
-    const p=document.getElementById('hostPrivateCheck').checked;
-    document.getElementById('hostCodeDisplay').classList.toggle('hidden',!p);
-    if(p)document.getElementById('generatedCode').value=generateCode();
+function toggleHostCode() {
+    const p = document.getElementById('hostPrivateCheck').checked;
+    document.getElementById('hostCodeDisplay').classList.toggle('hidden', !p);
+    if (p) document.getElementById('generatedCode').value = generateCode();
 }
-function toggleJoinCode(){
-    const p=document.getElementById('joinPrivateCheck').checked;
-    document.getElementById('joinCodeArea').classList.toggle('hidden',!p);
+function toggleJoinCode() {
+    const p = document.getElementById('joinPrivateCheck').checked;
+    document.getElementById('joinCodeArea').classList.toggle('hidden', !p);
 }
-function generateCode(){
-    const c='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    return Array.from({length:4},()=>c.charAt(Math.floor(Math.random()*c.length))).join('');
+function generateCode() {
+    const c = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    return Array.from({ length: 4 }, () => c.charAt(Math.floor(Math.random() * c.length))).join('');
 }
-async function startHost(){
-    roomName=document.getElementById('hostRoomInput').value.trim();
-    if(!roomName){showToast('Enter a room name','error');return;}
-    roomIsPrivate=document.getElementById('hostPrivateCheck').checked;
-    roomCode=document.getElementById('generatedCode').value;
-    const peerId='ypr_'+roomName.toLowerCase().replace(/[^a-z0-9]/g,'')+'_'+(roomIsPrivate?roomCode:'pub');
-    if(hostPeer)try{hostPeer.destroy();}catch{}
-    if(guestPeer)try{guestPeer.destroy();}catch{}
-    hostConnections=[];myRole='host';
-    hostPeer=new Peer(peerId,{debug:0});
-    hostPeer.on('open',()=>{
+async function startHost() {
+    roomName = document.getElementById('hostRoomInput').value.trim();
+    if (!roomName) { showToast('Enter a room name', 'error'); return; }
+    roomIsPrivate = document.getElementById('hostPrivateCheck').checked;
+    roomCode = document.getElementById('generatedCode').value;
+    const peerId = 'ypr_' + roomName.toLowerCase().replace(/[^a-z0-9]/g, '') + '_' + (roomIsPrivate ? roomCode : 'pub');
+    if (hostPeer) try { hostPeer.destroy(); } catch { }
+    if (guestPeer) try { guestPeer.destroy(); } catch { }
+    hostConnections = []; myRole = 'host';
+    hostPeer = new Peer(peerId, { debug: 0 });
+    hostPeer.on('open', () => {
         switchView('chat');
-        document.getElementById('chatNavItem').hidden=false;
-        document.getElementById('roomLabel').textContent='Room: '+roomName;
-        document.getElementById('messages').innerHTML='';
-        appendChatMsg('System',`Room created. ${roomIsPrivate?'Code: '+roomCode:'Public.'}`,'system');
-        if(!roomIsPrivate){
-            registerPublicRoom(roomName);
-        }
+        document.getElementById('chatNavItem').hidden = false;
+        document.getElementById('roomLabel').textContent = 'Room: ' + roomName;
+        document.getElementById('messages').innerHTML = '';
+        appendChatMsg('System', `Room created. ${roomIsPrivate ? 'Code: ' + roomCode : 'Public.'}`, 'system');
+        if (!roomIsPrivate) registerPublicRoom(roomName);
     });
-    hostPeer.on('connection',conn=>{
-        let nick=conn.metadata?.nick||'Unknown';
-        hostConnections.push({conn,nick});
-        conn.on('open',()=>{
-            appendChatMsg('System',`${nick} joined.`,'system');
-            hostConnections.forEach(e=>{if(e.conn!==conn&&e.conn.open)e.conn.send(JSON.stringify({type:'system',text:`${nick} joined.`}));});
+    hostPeer.on('connection', conn => {
+        let nick = conn.metadata?.nick || 'Unknown';
+        hostConnections.push({ conn, nick });
+        conn.on('open', () => {
+            appendChatMsg('System', `${nick} joined.`, 'system');
+            hostConnections.forEach(e => { if (e.conn !== conn && e.conn.open) e.conn.send(JSON.stringify({ type: 'system', text: `${nick} joined.` })); });
         });
-        conn.on('data',async data=>{
-            try{
-                const msg=typeof data==='string'?JSON.parse(data):data;
-                if(msg.type==='chat'){
-                    appendChatMsg(nick,msg.text,'other',msg.attachment,msg.time);
-                    hostConnections.forEach(e=>{if(e.conn!==conn&&e.conn.open)e.conn.send(JSON.stringify({type:'chat',nick:nick,text:msg.text,attachment:msg.attachment,time:msg.time}));});
+        conn.on('data', data => {
+            try {
+                const msg = typeof data === 'string' ? JSON.parse(data) : data;
+                if (msg.type === 'chat') {
+                    appendChatMsg(nick, msg.text, 'other', msg.attachment, msg.time);
+                    hostConnections.forEach(e => { if (e.conn !== conn && e.conn.open) e.conn.send(JSON.stringify({ type: 'chat', nick: nick, text: msg.text, attachment: msg.attachment, time: msg.time })); });
                 }
-            }catch(e){}
+            } catch (e) { }
         });
-        conn.on('close',()=>{
-            hostConnections=hostConnections.filter(e=>e.conn!==conn);
-            appendChatMsg('System',`${nick} left.`,'system');
-            hostConnections.forEach(e=>{if(e.conn.open)e.conn.send(JSON.stringify({type:'system',text:`${nick} left.`}));});
+        conn.on('close', () => {
+            hostConnections = hostConnections.filter(e => e.conn !== conn);
+            appendChatMsg('System', `${nick} left.`, 'system');
+            hostConnections.forEach(e => { if (e.conn.open) e.conn.send(JSON.stringify({ type: 'system', text: `${nick} left.` })); });
         });
     });
-    hostPeer.on('error',err=>{
-        if(err.type==='unavailable-id')showToast('Room name taken. Try another.','error');
+    hostPeer.on('error', err => {
+        if (err.type === 'unavailable-id') showToast('Room name taken. Try another.', 'error');
     });
 }
-async function startJoin(){
-    roomName=document.getElementById('joinRoomInput').value.trim();
-    if(!roomName){showToast('Enter a room name','error');return;}
-    roomIsPrivate=document.getElementById('joinPrivateCheck').checked;
-    roomCode=document.getElementById('joinCodeInput').value;
-    const targetId='ypr_'+roomName.toLowerCase().replace(/[^a-z0-9]/g,'')+'_'+(roomIsPrivate?roomCode:'pub');
-    if(guestPeer)try{guestPeer.destroy();}catch{}
-    if(hostPeer)try{hostPeer.destroy();}catch{}
-    myRole='guest';
-    guestPeer=new Peer({debug:0});
-    guestPeer.on('open',()=>{
-        guestConn=guestPeer.connect(targetId,{metadata:{nick:currentUser.nick},reliable:true});
-        guestConn.on('open',()=>{
+async function startJoin() {
+    roomName = document.getElementById('joinRoomInput').value.trim();
+    if (!roomName) { showToast('Enter a room name', 'error'); return; }
+    roomIsPrivate = document.getElementById('joinPrivateCheck').checked;
+    roomCode = document.getElementById('joinCodeInput').value;
+    const targetId = 'ypr_' + roomName.toLowerCase().replace(/[^a-z0-9]/g, '') + '_' + (roomIsPrivate ? roomCode : 'pub');
+    if (guestPeer) try { guestPeer.destroy(); } catch { }
+    if (hostPeer) try { hostPeer.destroy(); } catch { }
+    myRole = 'guest';
+    guestPeer = new Peer({ debug: 0 });
+    guestPeer.on('open', () => {
+        guestConn = guestPeer.connect(targetId, { metadata: { nick: currentUser.nick }, reliable: true });
+        guestConn.on('open', () => {
             switchView('chat');
-            document.getElementById('chatNavItem').hidden=false;
-            document.getElementById('roomLabel').textContent='Room: '+roomName;
-            document.getElementById('messages').innerHTML='';
-            appendChatMsg('System','Connected to room.','system');
+            document.getElementById('chatNavItem').hidden = false;
+            document.getElementById('roomLabel').textContent = 'Room: ' + roomName;
+            document.getElementById('messages').innerHTML = '';
+            appendChatMsg('System', 'Connected to room.', 'system');
         });
-        guestConn.on('data',data=>{
-            try{
-                const msg=typeof data==='string'?JSON.parse(data):data;
-                if(msg.type==='chat'){
-                    appendChatMsg(msg.nick,msg.text,'other',msg.attachment,msg.time);
-                }else if(msg.type==='system'){
-                    appendChatMsg('System',msg.text,'system');
-                }
-            }catch(e){}
+        guestConn.on('data', data => {
+            try {
+                const msg = typeof data === 'string' ? JSON.parse(data) : data;
+                if (msg.type === 'chat') appendChatMsg(msg.nick, msg.text, 'other', msg.attachment, msg.time);
+                else if (msg.type === 'system') appendChatMsg('System', msg.text, 'system');
+            } catch (e) { }
         });
-        guestConn.on('close',()=>{appendChatMsg('System','Disconnected from room.','system');});
+        guestConn.on('close', () => { appendChatMsg('System', 'Disconnected from room.', 'system'); });
     });
-    guestPeer.on('error',err=>{
-        if(err.type==='peer-unavailable')showToast('Room not found. Check name/code.','error');
+    guestPeer.on('error', err => {
+        if (err.type === 'peer-unavailable') showToast('Room not found. Check name/code.', 'error');
     });
 }
-function registerPublicRoom(room){
-    if(isDirectory){
-        if(!activePublicRooms.some(r=>r.room===room&&r.hostId===currentUser.id)){
-            activePublicRooms.push({room,host:currentUser.nick,hostId:currentUser.id,time:Date.now()});
+function registerPublicRoom(room) {
+    if (isDirectory) {
+        if (!activePublicRooms.some(r => r.room === room && r.hostId === currentUser.id)) {
+            activePublicRooms.push({ room, host: currentUser.nick, hostId: currentUser.id, time: Date.now() });
         }
         return;
     }
-    if(feedConn&&feedConn.open){
-        feedConn.send(JSON.stringify({type:'register_room',room,host:currentUser.nick,hostId:currentUser.id}));
+    if (feedConn && feedConn.open) {
+        feedConn.send(JSON.stringify({ type: 'register_room', room, host: currentUser.nick, hostId: currentUser.id }));
     }
 }
-function fetchPublicRooms(){
-    const el=document.getElementById('publicRoomsList');
-    el.innerHTML='<div class="text-muted">Searching...</div>';
-    if(isDirectory){
-        renderPublicRooms(activePublicRooms.filter(r=>Date.now()-r.time<3600000));
+function fetchPublicRooms() {
+    const el = document.getElementById('publicRoomsList');
+    el.innerHTML = '<div class="text-muted">Searching...</div>';
+    if (isDirectory) {
+        renderPublicRooms(activePublicRooms.filter(r => Date.now() - r.time < 3600000));
         return;
     }
-    if(feedConn&&feedConn.open){
-        feedConn.send(JSON.stringify({type:'get_rooms'}));
-        setTimeout(()=>{
-            if(el.innerHTML.includes('Searching'))el.innerHTML='<div class="text-muted">No rooms found.</div>';
-        },3000);
-    }else{
-        el.innerHTML='<div class="text-muted">Not connected to directory.</div>';
+    if (feedConn && feedConn.open) {
+        feedConn.send(JSON.stringify({ type: 'get_rooms' }));
+        setTimeout(() => { if (el.innerHTML.includes('Searching')) el.innerHTML = '<div class="text-muted">No rooms found.</div>'; }, 3000);
+    } else {
+        el.innerHTML = '<div class="text-muted">Not connected to directory.</div>';
     }
 }
-function renderPublicRooms(rooms){
-    const el=document.getElementById('publicRoomsList');
-    if(!rooms||rooms.length===0){
-        el.innerHTML='<div class="text-muted">No public rooms active.</div>';
+function renderPublicRooms(rooms) {
+    const el = document.getElementById('publicRoomsList');
+    if (!rooms || rooms.length === 0) {
+        el.innerHTML = '<div class="text-muted">No public rooms active.</div>';
         return;
     }
-    el.innerHTML=rooms.sort((a,b)=>b.time-a.time).map(r=>`
+    el.innerHTML = rooms.sort((a, b) => b.time - a.time).map(r => `
         <div class="room-list-item">
             <div class="room-info">
                 <div class="room-name">${escapeHtml(r.room)}</div>
@@ -1827,92 +1824,92 @@ function renderPublicRooms(rooms){
             <button class="btn btn-primary btn-small" onclick="quickJoinRoom('${escapeHtml(r.room)}')">Join</button>
         </div>`).join('');
 }
-function quickJoinRoom(room){
-    document.getElementById('joinRoomInput').value=room;
-    document.getElementById('joinPrivateCheck').checked=false;
+function quickJoinRoom(room) {
+    document.getElementById('joinRoomInput').value = room;
+    document.getElementById('joinPrivateCheck').checked = false;
     toggleJoinCode();
     startJoin();
 }
-async function sendChat(){
-    const input=document.getElementById('chatInput');
-    const text=input.value.trim();
-    if(!text&&!currentChatAttachment)return;
-    input.value='';
-    const attachment=currentChatAttachment;
-    currentChatAttachment=null;renderChatAttachmentPreview();
+function sendChat() {
+    const input = document.getElementById('chatInput');
+    const text = input.value.trim();
+    const att = pendingAttachment && pendingAttachment.context === 'chat' ? pendingAttachment : null;
+    if (!text && !att) return;
+    input.value = '';
+    if (att) clearAttachment('chat');
     
-    const time=Date.now();
-    appendChatMsg(currentUser.nick+' (You)',text,'self',attachment,time);
+    const time = Date.now();
+    appendChatMsg(currentUser.nick + ' (You)', text, 'self', att, time);
     
-    if(myRole==='host'){
-        hostConnections.forEach(e=>{if(e.conn.open)e.conn.send(JSON.stringify({type:'chat',nick:currentUser.nick,text,attachment,time}));});
-    }else if(guestConn&&guestConn.open){
-        guestConn.send(JSON.stringify({type:'chat',nick:currentUser.nick,text,attachment,time}));
+    if (myRole === 'host') {
+        hostConnections.forEach(e => { if (e.conn.open) e.conn.send(JSON.stringify({ type: 'chat', nick: currentUser.nick, text, attachment: att, time })); });
+    } else if (guestConn && guestConn.open) {
+        guestConn.send(JSON.stringify({ type: 'chat', nick: currentUser.nick, text, attachment: att, time }));
     }
 }
-function appendChatMsg(author,text,role,attachment,time){
-    const c=document.getElementById('messages');
-    if(!c)return;
-    const t=time?new Date(time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-    if(role==='system'){
-        c.insertAdjacentHTML('beforeend',`<div class="chat-msg-system">${escapeHtml(text)}</div>`);
-    }else{
-        const db=getDB();
-        const align=db.settings?.chatAlign||'me-right';
-        let isSelf=role==='self';
-        let msgClass='chat-msg';
-        if(align==='me-right'){msgClass+=isSelf?' self':'';}
-        else if(align==='me-left'){msgClass+=!isSelf?' self':'';}
-        else if(align==='all-left'){}
-        else if(align==='all-right'){msgClass+=' self';}
+function appendChatMsg(author, text, role, attachment, time) {
+    const c = document.getElementById('messages');
+    if (!c) return;
+    const t = time ? new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (role === 'system') {
+        c.insertAdjacentHTML('beforeend', `<div class="chat-msg-system">${escapeHtml(text)}</div>`);
+    } else {
+        const db = getDB();
+        const align = db.settings?.chatAlign || 'me-right';
+        let isSelf = role === 'self';
+        let msgClass = 'chat-msg';
+        if (align === 'me-right') { msgClass += isSelf ? ' self' : ''; }
+        else if (align === 'me-left') { msgClass += !isSelf ? ' self' : ''; }
+        else if (align === 'all-left') { }
+        else if (align === 'all-right') { msgClass += ' self'; }
         
-        let attHtml='';
-        if(attachment){
-            if(attachment.type.startsWith('image/'))attHtml=`<div class="chat-msg-attachment"><img src="${attachment.dataUrl}" onclick="viewImage('${attachment.dataUrl}')"></div>`;
-            else if(attachment.type.startsWith('video/'))attHtml=`<div class="chat-msg-attachment"><video src="${attachment.dataUrl}" controls></video></div>`;
-            else attHtml=`<div class="chat-msg-attachment"><a class="file-att" href="${attachment.dataUrl}" download="${escapeHtml(attachment.name)}" style="font-size:0.8rem;">${escapeHtml(attachment.name)}</a></div>`;
+        let attHtml = '';
+        if (attachment) {
+            if (attachment.type.startsWith('image/')) attHtml = `<div class="chat-msg-attachment"><img src="${attachment.dataUrl}" onclick="viewImage('${attachment.dataUrl}')"></div>`;
+            else if (attachment.type.startsWith('video/')) attHtml = `<div class="chat-msg-attachment"><video src="${attachment.dataUrl}" controls></video></div>`;
+            else attHtml = `<div class="chat-msg-attachment"><a class="file-att" href="${attachment.dataUrl}" download="${escapeHtml(attachment.name)}" style="font-size:0.8rem;">${escapeHtml(attachment.name)}</a></div>`;
         }
-        const avatarChar=author.charAt(0).toUpperCase();
-        const showAuthor=!isSelf||(align==='all-right');
-        c.insertAdjacentHTML('beforeend',`
+        const avatarChar = author.charAt(0).toUpperCase();
+        const showAuthor = !isSelf || (align === 'all-right');
+        c.insertAdjacentHTML('beforeend', `
             <div class="${msgClass}">
                 <div class="user-avatar" style="width:32px;height:32px;font-size:0.8rem;">${escapeHtml(avatarChar)}</div>
                 <div>
-                    ${showAuthor&&role!=='self'?`<div class="chat-msg-author">${escapeHtml(author)}</div>`:''}
+                    ${showAuthor && role !== 'self' ? `<div class="chat-msg-author">${escapeHtml(author)}</div>` : ''}
                     <div class="chat-msg-bubble">${escapeHtml(text)}${attHtml}</div>
                     <div class="chat-msg-meta">${t}</div>
                 </div>
             </div>`);
     }
-    c.scrollTop=c.scrollHeight;
+    c.scrollTop = c.scrollHeight;
 }
-function leaveRoom(){
-    showModal('Leave Room','<p>Are you sure you want to leave this room?</p>',[
-        {label:'Cancel',class:'btn-secondary'},
-        {label:'Leave',class:'btn-danger',onClick:()=>{
-            if(hostPeer)try{hostPeer.destroy();}catch{}
-            if(guestPeer)try{guestPeer.destroy();}catch{}
-            hostPeer=null;guestPeer=null;guestConn=null;hostConnections=[];myRole=null;
-            document.getElementById('chatNavItem').hidden=true;
+function leaveRoom() {
+    showModal('Leave Room', '<p>Are you sure you want to leave this room?</p>', [
+        { label: 'Cancel', class: 'btn-secondary' },
+        { label: 'Leave', class: 'btn-danger', onClick: () => {
+            if (hostPeer) try { hostPeer.destroy(); } catch { }
+            if (guestPeer) try { guestPeer.destroy(); } catch { }
+            hostPeer = null; guestPeer = null; guestConn = null; hostConnections = []; myRole = null;
+            document.getElementById('chatNavItem').hidden = true;
             switchView('rooms');
         }}
     ]);
 }
 
 // ============ SETTINGS ============
-function renderSettings(){
-    const el=document.getElementById('settingsContent');
-    if(!el)return;
-    const db=getDB();
-    const s=db.settings||{};
-    el.innerHTML=`
+function renderSettings() {
+    const el = document.getElementById('settingsContent');
+    if (!el) return;
+    const db = getDB();
+    const s = db.settings || {};
+    el.innerHTML = `
         <div class="settings-section">
             <div class="settings-header">Appearance</div>
             <div class="setting-row">
                 <div class="setting-info"><h4>Theme</h4><p>Choose your color scheme</p></div>
                 <div style="display:flex;gap:6px;">
-                    <button class="btn btn-secondary btn-small ${s.theme==='dark'?'btn-primary':''}" onclick="setTheme('dark')">Dark</button>
-                    <button class="btn btn-secondary btn-small ${s.theme==='light'?'btn-primary':''}" onclick="setTheme('light')">Light</button>
+                    <button class="btn btn-secondary btn-small ${s.theme === 'dark' ? 'btn-primary' : ''}" onclick="setTheme('dark')">Dark</button>
+                    <button class="btn btn-secondary btn-small ${s.theme === 'light' ? 'btn-primary' : ''}" onclick="setTheme('light')">Light</button>
                 </div>
             </div>
         </div>
@@ -1921,19 +1918,19 @@ function renderSettings(){
             <div class="setting-row">
                 <div class="setting-info"><h4>Message Alignment (Rooms)</h4><p>How messages appear in chat rooms</p></div>
                 <select onchange="updateSetting('chatAlign',this.value)">
-                    <option value="me-right" ${s.chatAlign==='me-right'?'selected':''}>Me right, others left</option>
-                    <option value="me-left" ${s.chatAlign==='me-left'?'selected':''}>Me left, others right</option>
-                    <option value="all-left" ${s.chatAlign==='all-left'?'selected':''}>All on left</option>
-                    <option value="all-right" ${s.chatAlign==='all-right'?'selected':''}>All on right</option>
+                    <option value="me-right" ${s.chatAlign === 'me-right' ? 'selected' : ''}>Me right, others left</option>
+                    <option value="me-left" ${s.chatAlign === 'me-left' ? 'selected' : ''}>Me left, others right</option>
+                    <option value="all-left" ${s.chatAlign === 'all-left' ? 'selected' : ''}>All on left</option>
+                    <option value="all-right" ${s.chatAlign === 'all-right' ? 'selected' : ''}>All on right</option>
                 </select>
             </div>
             <div class="setting-row">
                 <div class="setting-info"><h4>In-App Sounds</h4><p>Play sound on new messages</p></div>
-                <label class="toggle"><input type="checkbox" ${s.sound?'checked':''} onchange="updateSetting('sound',this.checked)"><span class="toggle-slider"></span></label>
+                <label class="toggle"><input type="checkbox" ${s.sound ? 'checked' : ''} onchange="updateSetting('sound',this.checked)"><span class="toggle-slider"></span></label>
             </div>
             <div class="setting-row">
                 <div class="setting-info"><h4>Desktop Notifications</h4><p>Browser popups for new messages</p></div>
-                <label class="toggle"><input type="checkbox" ${s.notifications?'checked':''} onchange="updateSetting('notifications',this.checked)"><span class="toggle-slider"></span></label>
+                <label class="toggle"><input type="checkbox" ${s.notifications ? 'checked' : ''} onchange="updateSetting('notifications',this.checked)"><span class="toggle-slider"></span></label>
             </div>
         </div>
         <div class="settings-section">
@@ -1962,90 +1959,79 @@ function renderSettings(){
             </div>
             <div class="setting-row">
                 <div class="setting-info"><h4>Your Peer ID</h4><p>Share this so others can DM/follow you</p></div>
-                <button class="btn btn-secondary btn-small" onclick="copyText('${myPeerId||''}')">Copy ID</button>
+                <button class="btn btn-secondary btn-small" onclick="copyText('${myPeerId || ''}')">Copy ID</button>
             </div>
         </div>`;
     updateNetStatus2();
 }
-function updateNetStatus2(){
-    const el=document.getElementById('netStatus2');
-    if(!el)return;
-    if(isDirectory)el.textContent='Hosting network (Server mode)';
-    else if(feedConn&&feedConn.open)el.textContent='Connected to network';
-    else el.textContent='Connecting...';
+function updateNetStatus2() {
+    const el = document.getElementById('netStatus2');
+    if (!el) return;
+    if (isDirectory) el.textContent = 'Hosting network (Server mode)';
+    else if (feedConn && feedConn.open) el.textContent = 'Connected to network';
+    else el.textContent = 'Connecting...';
 }
-function setTheme(theme){
-    const db=getDB();if(!db.settings)db.settings={};
-    db.settings.theme=theme;saveDB(db);applyTheme();renderSettings();
+function setTheme(theme) {
+    const db = getDB(); if (!db.settings) db.settings = {};
+    db.settings.theme = theme; saveDB(db); applyTheme(); renderSettings();
 }
-function applyTheme(){
-    const db=getDB();
-    document.body.setAttribute('data-theme',db.settings?.theme||'dark');
+function applyTheme() {
+    const db = getDB();
+    document.body.setAttribute('data-theme', db.settings?.theme || 'dark');
 }
-function updateSetting(key,val){
-    const db=getDB();if(!db.settings)db.settings={};
-    db.settings[key]=val;saveDB(db);
-    if(key==='notifications'&&val&&Notification.permission!=='granted')Notification.requestPermission();
-    if(key==='sound'&&val)playSound();
+function updateSetting(key, val) {
+    const db = getDB(); if (!db.settings) db.settings = {};
+    db.settings[key] = val; saveDB(db);
+    if (key === 'notifications' && val && Notification.permission !== 'granted') Notification.requestPermission();
+    if (key === 'sound' && val) playSound();
     renderSettings();
 }
-function clearFeedCache(){
-    showModal('Clear Feed Cache','<p>This will remove all downloaded feed posts from your device.</p>',[
-        {label:'Cancel',class:'btn-secondary'},
-        {label:'Clear',class:'btn-danger',onClick:()=>{
-            globalFeed=[];const db=getDB();db.feedCache=[];saveDB(db);renderFeed();showToast('Feed cache cleared','success');
+function clearFeedCache() {
+    showModal('Clear Feed Cache', '<p>This will remove all downloaded feed posts from your device.</p>', [
+        { label: 'Cancel', class: 'btn-secondary' },
+        { label: 'Clear', class: 'btn-danger', onClick: () => {
+            globalFeed = []; const db = getDB(); db.feedCache = []; saveDB(db); renderFeed(); showToast('Feed cache cleared', 'success');
         }}
     ]);
 }
-function resetAlgorithm(){
-    const db=getDB();db.interestProfile={};db.likedPosts=[];db.dislikedPosts=[];db.viewedPosts=[];saveDB(db);
-    renderFeed();showToast('Algorithm reset','success');
+function resetAlgorithm() {
+    const db = getDB(); db.interestProfile = {}; db.likedPosts = []; db.dislikedPosts = []; db.viewedPosts = []; saveDB(db);
+    renderFeed(); showToast('Algorithm reset', 'success');
 }
-function clearDMs(){
-    showModal('Clear DM History','<p>Delete all direct messages? This cannot be undone.</p>',[
-        {label:'Cancel',class:'btn-secondary'},
-        {label:'Clear',class:'btn-danger',onClick:()=>{
-            const db=getDB();db.dmHistory={};saveDB(db);renderDMList();
-            document.getElementById('dmChatArea').innerHTML='<div class="dm-empty"><div style="font-size:2.5rem;opacity:0.3;">&#9993;</div><div>Select a conversation</div></div>';
-            showToast('DM history cleared','success');
+function clearDMs() {
+    showModal('Clear DM History', '<p>Delete all direct messages? This cannot be undone.</p>', [
+        { label: 'Cancel', class: 'btn-secondary' },
+        { label: 'Clear', class: 'btn-danger', onClick: () => {
+            const db = getDB(); db.dmHistory = {}; saveDB(db); renderDMList();
+            document.getElementById('dmChatArea').innerHTML = '<div class="dm-empty"><div style="font-size:2.5rem;opacity:0.3;">&#9993;</div><div>Select a conversation</div></div>';
+            showToast('DM history cleared', 'success');
         }}
     ]);
 }
-function wipeAll(){
-    showModal('Wipe All Data','<p>This permanently deletes your account, posts, messages, and settings. Continue?</p>',[
-        {label:'Cancel',class:'btn-secondary'},
-        {label:'Wipe Everything',class:'btn-danger',onClick:()=>{
-            localStorage.clear();location.reload();
+function wipeAll() {
+    showModal('Wipe All Data', '<p>This permanently deletes your account, posts, messages, and settings. Continue?</p>', [
+        { label: 'Cancel', class: 'btn-secondary' },
+        { label: 'Wipe Everything', class: 'btn-danger', onClick: () => {
+            localStorage.clear(); location.reload();
         }}
     ]);
 }
 
 // ============ INIT ============
-window.addEventListener('DOMContentLoaded',()=>{
-    const db=getDB();
+window.addEventListener('DOMContentLoaded', () => {
+    const db = getDB();
     applyTheme();
-    if(db.session&&db.users[db.session]){
+    if (db.session && db.users[db.session]) {
         initApp(db.users[db.session]);
     }
-    // Enter key handlers
-    document.getElementById('loginPassword')?.addEventListener('keydown',e=>{if(e.key==='Enter')login();});
-    document.getElementById('regPassword')?.addEventListener('keydown',e=>{if(e.key==='Enter')register();});
-    document.getElementById('postInput')?.addEventListener('keydown',e=>{
-        if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();postMessage();}
+    document.getElementById('loginPassword')?.addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
+    document.getElementById('regPassword')?.addEventListener('keydown', e => { if (e.key === 'Enter') register(); });
+    document.getElementById('postInput')?.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); postMessage(); }
     });
 });
 
-// Handle window resize for mobile
-window.addEventListener('resize',()=>{
-    if(window.innerWidth>768){toggleSidebar(false);}
-});
-
-// Request notification permission on first interaction
-document.addEventListener('click',()=>{
-    if(Notification.permission==='default'){
-        // Don't auto-request, wait for setting
-    }
-},{once:true});
+window.addEventListener('resize', () => { if (window.innerWidth > 768) { toggleSidebar(false); } });
 </script>
 </body>
 </html>
