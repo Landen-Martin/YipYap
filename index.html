@@ -6,42 +6,45 @@
     <title>YipYap | P2P Social</title>
     <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
     <style>
+        /* =========================================
+           YipYap Orange Theme
+           ========================================= */
         :root {
-            --bg-primary: #1a1b1e;
-            --bg-secondary: #222327;
-            --bg-tertiary: #2c2e33;
-            --bg-floating: #313238;
-            --text-normal: #e4e4e7;
-            --text-muted: #9ca3af;
-            --text-link: #818cf8;
-            --accent: #6366f1;
-            --accent-hover: #4f46e5;
-            --danger: #f87171;
-            --success: #4ade80;
-            --warning: #fbbf24;
-            --border-color: #3f3f46;
-            --scrollbar-thumb: #3f3f46;
-            --scrollbar-track: #222327;
-            --shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-            --gradient: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+            --bg-primary: #16161a;     /* Deep dark background */
+            --bg-secondary: #1e1e24;   /* Sidebar/Cards */
+            --bg-tertiary: #2a2a32;    /* Inputs/Hovers */
+            --bg-floating: #313138;    /* Modals/Toasts */
+            --text-normal: #f5f5f5;
+            --text-muted: #a0a0a8;
+            --text-link: #ff8c42;
+            --accent: #ff7b00;         /* Primary Orange */
+            --accent-hover: #e66e00;
+            --danger: #ff4d4d;
+            --success: #52d869;
+            --warning: #ffc107;
+            --border-color: #3a3a42;
+            --scrollbar-thumb: #3a3a42;
+            --scrollbar-track: #1e1e24;
+            --shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            --gradient: linear-gradient(135deg, #ff8c42 0%, #ff5e00 100%);
         }
 
         [data-theme="light"] {
-            --bg-primary: #f8fafc;
+            --bg-primary: #f9f9f9;
             --bg-secondary: #ffffff;
-            --bg-tertiary: #f1f5f9;
+            --bg-tertiary: #f1f1f1;
             --bg-floating: #ffffff;
-            --text-normal: #1e293b;
-            --text-muted: #64748b;
-            --text-link: #6366f1;
-            --accent: #6366f1;
-            --accent-hover: #4f46e5;
+            --text-normal: #1e1e1e;
+            --text-muted: #6b6b6b;
+            --text-link: #e66e00;
+            --accent: #ff7b00;
+            --accent-hover: #cc6300;
             --danger: #ef4444;
             --success: #22c55e;
             --warning: #f59e0b;
-            --border-color: #e2e8f0;
+            --border-color: #e2e2e2;
             --scrollbar-thumb: #cbd5e1;
-            --scrollbar-track: #f1f5f9;
+            --scrollbar-track: #f1f1f1;
             --shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
         }
 
@@ -226,8 +229,8 @@
             font-family: inherit;
         }
         .action-btn:hover { border-color: var(--text-muted); color: var(--text-normal); }
-        .action-btn.active-like { border-color: var(--success); color: var(--success); background: rgba(74, 222, 128, 0.1); }
-        .action-btn.active-dislike { border-color: var(--danger); color: var(--danger); background: rgba(248, 113, 113, 0.1); }
+        .action-btn.active-like { border-color: var(--success); color: var(--success); background: rgba(82, 216, 105, 0.1); }
+        .action-btn.active-dislike { border-color: var(--danger); color: var(--danger); background: rgba(255, 77, 77, 0.1); }
         .action-btn svg { width: 14px; height: 14px; }
 
         .reply-section { margin-top: 12px; padding-left: 48px; display: flex; flex-direction: column; gap: 8px; }
@@ -261,11 +264,14 @@
         .chat-history { flex-grow: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-height: 0; -webkit-overflow-scrolling: touch; }
         .chat-msg { display: flex; gap: 10px; max-width: 80%; animation: fadeIn 0.2s; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-        .chat-msg.self { align-self: flex-end; flex-direction: row-reverse; }
-        .chat-msg-bubble { background: var(--bg-tertiary); padding: 9px 13px; border-radius: 12px; font-size: 0.92rem; line-height: 1.4; word-wrap: break-word; max-width: 100%; }
+        
+        /* Bug Fix 10: Separated alignment and styling */
+        .chat-msg.right { align-self: flex-end; flex-direction: row-reverse; }
         .chat-msg.self .chat-msg-bubble { background: var(--accent); color: white; }
+        
+        .chat-msg-bubble { background: var(--bg-tertiary); padding: 9px 13px; border-radius: 12px; font-size: 0.92rem; line-height: 1.4; word-wrap: break-word; max-width: 100%; }
         .chat-msg-meta { font-size: 0.7rem; color: var(--text-muted); margin-top: 3px; }
-        .chat-msg.self .chat-msg-meta { text-align: right; }
+        .chat-msg.right .chat-msg-meta { text-align: right; }
         .chat-msg-author { font-weight: 600; font-size: 0.78rem; margin-bottom: 2px; color: var(--accent); }
         .chat-msg-system { color: var(--text-muted); font-style: italic; text-align: center; font-size: 0.82rem; padding: 4px 0; }
         .chat-msg-attachment { margin-top: 6px; }
@@ -683,10 +689,14 @@
 <script>
 // ============ DEV MODE ============
 let devMode = false;
+let devInterval = null; // Bug 11 Fix: Track interval
 const devKeys = { d: false, e: false, v: false };
 let devKeyTimer = null;
 
 document.addEventListener('keydown', (e) => {
+    // Bug 12 Fix: Ignore if typing
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    
     const key = e.key.toLowerCase();
     if (key in devKeys) {
         devKeys[key] = true;
@@ -716,9 +726,11 @@ function toggleDevMode() {
             <div>Conns: <span id="devConns">0</span></div>
         `;
         document.body.appendChild(panel);
-        setInterval(updateDevPanel, 1000);
+        updateDevPanel(); // Initial call
+        devInterval = setInterval(updateDevPanel, 1000); // Bug 11 Fix: Store ID
     } else {
         showToast('Dev Mode Disabled', 'info');
+        if (devInterval) clearInterval(devInterval); // Bug 11 Fix: Clear interval
         document.getElementById('devPanel')?.remove();
     }
 }
@@ -754,7 +766,6 @@ function getDB() {
     try {
         let db = JSON.parse(localStorage.getItem(DB_KEY));
         if (!db) return defaultDB();
-        // Merge defaults to ensure new keys exist
         return Object.assign(defaultDB(), db);
     } catch { return defaultDB(); }
 }
@@ -763,10 +774,18 @@ function defaultDB() {
         users: {}, session: null, following: [], followers: [],
         myPosts: [], feedCache: [], interestProfile: {},
         likedPosts: [], dislikedPosts: [], viewedPosts: [],
-        dmHistory: {}, settings: { theme: 'dark', notifications: false, sound: true, chatAlign: 'me-right', dmPrivacy: 'everyone' }
+        dmHistory: {}, pendingDMs: {}, settings: { theme: 'dark', notifications: false, sound: true, chatAlign: 'me-right', dmPrivacy: 'everyone' }
     };
 }
-function saveDB(db) { localStorage.setItem(DB_KEY, JSON.stringify(db)); }
+// Bug 1 Fix: Catch Quota Exceeded
+function saveDB(db) {
+    try {
+        localStorage.setItem(DB_KEY, JSON.stringify(db));
+    } catch (e) {
+        showToast('Storage full! Please clear old data.', 'error');
+        console.error("LocalStorage Quota Exceeded:", e);
+    }
+}
 let currentUser = null, myPeerId = null;
 
 // ============ AUTH ============
@@ -826,7 +845,8 @@ function logout() {
 // ============ APP INIT ============
 function initApp(user) {
     currentUser = user;
-    myPeerId = 'yp_' + (user.email ? user.email.replace(/[^a-zA-Z0-9]/g, '') : user.id);
+    // Bug 8 Fix: Use user ID instead of email to prevent collisions
+    myPeerId = 'yp_' + user.id.replace(/[^a-zA-Z0-9]/g, '');
     document.getElementById('authScreen').classList.add('hidden');
     document.getElementById('userName').textContent = user.nick;
     document.getElementById('userAvatar').textContent = user.nick.charAt(0).toUpperCase();
@@ -898,17 +918,20 @@ function showModal(title, content, actions = []) {
     });
     c.appendChild(o);
 }
+// Bug 13 Fix: Avoid massive inline Base64 attributes
 function viewImage(src) {
     const v = document.createElement('div');
     v.className = 'image-viewer';
-    v.innerHTML = `<img src="${escapeHtml(src)}">`;
+    const img = document.createElement('img');
+    img.src = src;
+    v.appendChild(img);
     v.onclick = () => v.remove();
     document.body.appendChild(v);
 }
 
 // ============ FILE HANDLING ============
 const MAX_FILE_SIZE = 2 * 1024 * 1024;
-let pendingAttachment = null; // Unified attachment handler
+let pendingAttachment = null;
 
 function handleFileSelect(event, context) {
     const file = event.target.files[0];
@@ -948,15 +971,14 @@ function clearAttachment(context) {
 }
 function renderAttachment(att) {
     if (!att) return '';
-    if (att.type.startsWith('image/')) return `<div class="post-attachment"><img src="${att.dataUrl}" onclick="viewImage('${att.dataUrl}')"></div>`;
+    if (att.type.startsWith('image/')) return `<div class="post-attachment"><img src="${att.dataUrl}" onclick="viewImage(this.src)"></div>`;
     if (att.type.startsWith('video/')) return `<div class="post-attachment"><video src="${att.dataUrl}" controls></video></div>`;
     return `<div class="post-attachment"><a class="file-att" href="${att.dataUrl}" download="${escapeHtml(att.name)}">${escapeHtml(att.name)} (${Math.round(att.size / 1024)}KB)</a></div>`;
 }
 
 // ============ ALGORITHM ============
 function tokenize(text) { return (text || '').toLowerCase().match(/\b[a-z0-9]{3,}\b/g) || []; }
-function updateInterestProfile(text, weight) {
-    const db = getDB();
+function updateInterestProfileDB(db, text, weight) {
     if (!db.interestProfile) db.interestProfile = {};
     tokenize(text).forEach(w => {
         if (!db.interestProfile[w]) db.interestProfile[w] = 0;
@@ -964,7 +986,6 @@ function updateInterestProfile(text, weight) {
         if (db.interestProfile[w] > 10) db.interestProfile[w] = 10;
         if (db.interestProfile[w] < -5) db.interestProfile[w] = -5;
     });
-    saveDB(db);
 }
 function scorePost(post) {
     const db = getDB();
@@ -976,7 +997,7 @@ function scorePost(post) {
     if (db.following.some(f => f.peerId === post.authorId)) score += 3;
     const hoursOld = (Date.now() - post.time) / (1000 * 60 * 60);
     score -= hoursOld * 0.15;
-    score += Math.random() * 0.5;
+    // Bug 9 Fix: Removed Math.random() to stop erratic reshuffling on re-renders
     return score;
 }
 
@@ -988,7 +1009,10 @@ let activeFeedConns = [];
 let feedConn = null;
 let dirRetryTimer = null;
 let activePublicRooms = [];
-const DIR_ID = 'yipyap-dir-v5-' + Math.floor(Date.now() / (1000 * 60 * 60 * 24));
+let peerInitRetries = 0; // Bug 15 Fix: Track retries
+
+// Bug 3 Fix: Hardcoded directory ID
+const DIR_ID = 'yipyap-dir-v5';
 
 function updateFeedStatus() {
     const el = document.getElementById('feedStatus');
@@ -1005,6 +1029,7 @@ function initBackgroundPeer() {
 
     directoryPeer.on('open', () => {
         isDirectory = true;
+        peerInitRetries = 0; // Reset on success
         updateFeedStatus();
         renderFeed();
         activePublicRooms = activePublicRooms.filter(r => Date.now() - r.time < 3600000);
@@ -1111,7 +1136,11 @@ function becomeFeedClient() {
         feedConn.on('error', () => { feedConn = null; updateFeedStatus(); scheduleReconnect(); });
     });
     directoryPeer.on('error', err => {
-        if (err.type === 'unavailable-id') { try { directoryPeer.destroy(); } catch { } initBackgroundPeer(); }
+        if (err.type === 'unavailable-id') { 
+            try { directoryPeer.destroy(); } catch { } 
+            peerInitRetries++;
+            if (peerInitRetries < 5) initBackgroundPeer(); 
+        }
         updateFeedStatus();
     });
 }
@@ -1149,7 +1178,7 @@ function postMessage() {
     if (globalFeed.length > 200) globalFeed.length = 200;
     db.feedCache = globalFeed; saveDB(db);
     
-    updateInterestProfile(text, 2);
+    updateInterestProfileDB(db, text, 2); saveDB(db); // Bug 2 Fix: Use shared db instance
     renderFeed(); renderMyPosts();
     broadcastToFeed({ type: 'new_post', post });
     showToast('Posted!', 'success');
@@ -1244,7 +1273,7 @@ function attachPostHandlers(el) {
 }
 
 function handleInteraction(postId, type) {
-    const db = getDB();
+    const db = getDB(); // Bug 2 Fix: Use single DB instance
     const post = globalFeed.find(p => p.id === postId) || db.myPosts.find(p => p.id === postId);
     if (!post) return;
     if (!post.likedBy) post.likedBy = [];
@@ -1255,12 +1284,12 @@ function handleInteraction(postId, type) {
             db.likedPosts = db.likedPosts.filter(id => id !== postId);
             post.likes = Math.max(0, (post.likes || 0) - 1);
             post.likedBy = post.likedBy.filter(id => id !== currentUser.id);
-            updateInterestProfile(post.text, -1);
+            updateInterestProfileDB(db, post.text, -1); 
         } else {
             db.likedPosts.push(postId);
             post.likes = (post.likes || 0) + 1;
             post.likedBy.push(currentUser.id);
-            updateInterestProfile(post.text, 2);
+            updateInterestProfileDB(db, post.text, 2);
             if (db.dislikedPosts.includes(postId)) {
                 db.dislikedPosts = db.dislikedPosts.filter(id => id !== postId);
                 post.dislikes = Math.max(0, (post.dislikes || 0) - 1);
@@ -1272,12 +1301,12 @@ function handleInteraction(postId, type) {
             db.dislikedPosts = db.dislikedPosts.filter(id => id !== postId);
             post.dislikes = Math.max(0, (post.dislikes || 0) - 1);
             post.dislikedBy = post.dislikedBy.filter(id => id !== currentUser.id);
-            updateInterestProfile(post.text, 1);
+            updateInterestProfileDB(db, post.text, 1);
         } else {
             db.dislikedPosts.push(postId);
             post.dislikes = (post.dislikes || 0) + 1;
             post.dislikedBy.push(currentUser.id);
-            updateInterestProfile(post.text, -2);
+            updateInterestProfileDB(db, post.text, -2);
             if (db.likedPosts.includes(postId)) {
                 db.likedPosts = db.likedPosts.filter(id => id !== postId);
                 post.likes = Math.max(0, (post.likes || 0) - 1);
@@ -1287,7 +1316,7 @@ function handleInteraction(postId, type) {
     }
     saveDB(db);
     broadcastToFeed({ type: 'update_post', post });
-    const d2 = getDB(); d2.feedCache = globalFeed; saveDB(d2);
+    db.feedCache = globalFeed; saveDB(db);
     renderFeed(); renderMyPosts();
 }
 
@@ -1300,15 +1329,17 @@ function sendReply(pid) {
     if (!input) return;
     const text = input.value.trim();
     if (!text) return;
-    const post = globalFeed.find(p => p.id === pid);
+    const db = getDB();
+    // Bug 6 Fix: Check local cache too
+    const post = globalFeed.find(p => p.id === pid) || db.myPosts.find(p => p.id === pid);
     if (!post) return;
     if (!post.replies) post.replies = [];
     post.replies.push({ authorId: currentUser.id, nick: currentUser.nick, text, time: Date.now() });
-    updateInterestProfile(post.text, 3);
+    updateInterestProfileDB(db, post.text, 3);
     input.value = '';
     document.getElementById('replies_' + pid).classList.add('hidden');
     broadcastToFeed({ type: 'update_post', post });
-    const db = getDB(); db.feedCache = globalFeed; saveDB(db);
+    db.feedCache = globalFeed; saveDB(db);
     renderFeed();
 }
 function deletePost(pid) {
@@ -1358,8 +1389,9 @@ function renderProfile() {
     }
     
     const userPosts = globalFeed.filter(p => p.authorId === userId);
-    const followingCount = db.following.filter(f => f.peerId === userId).length;
-    const followersCount = (user.followers || []).length;
+    // Bug 4 Fix: Correctly check followers
+    const followingCount = isMe ? db.following.length : 0; 
+    const followersCount = db.followers.filter(f => f.peerId === userId).length;
     const isFollowing = db.following.some(f => f.peerId === userId);
     
     if (isMe) {
@@ -1455,7 +1487,7 @@ function toggleFollow(userId, nick) {
 }
 
 let profilePeer = null;
-let peerConnections = {}; // peerId -> conn
+let peerConnections = {}; 
 
 function initProfilePeer() {
     if (!myPeerId) return;
@@ -1496,7 +1528,10 @@ function initProfilePeer() {
     });
     
     profilePeer.on('error', err => {
-        if (err.type === 'unavailable-id') { /* Profile peer already exists */ }
+        // Bug 7 Fix: Notify user instead of silent failure
+        if (err.type === 'unavailable-id') { 
+            showToast('Profile connection failed (open in another tab?)', 'error'); 
+        }
     });
 }
 
@@ -1505,8 +1540,19 @@ function connectToPeer(peerId, nick) {
     if (peerConnections[peerId] && peerConnections[peerId].open) return peerConnections[peerId];
     if (!profilePeer || profilePeer.destroyed) return null;
     try {
-        const conn = profilePeer.connect(peerId, { reliable: true });
-        conn.on('open', () => { peerConnections[peerId] = conn; });
+        // Bug 14 Fix: Added metadata
+        const conn = profilePeer.connect(peerId, { metadata: { nick: currentUser.nick }, reliable: true });
+        conn.on('open', () => {
+            peerConnections[peerId] = conn;
+            // Bug 5 Fix: Flush pending DMs
+            const db = getDB();
+            if (db.pendingDMs && db.pendingDMs[peerId]) {
+                db.pendingDMs[peerId].forEach(msg => conn.send(JSON.stringify(msg)));
+                delete db.pendingDMs[peerId];
+                saveDB(db);
+                showToast('Pending messages sent.', 'success');
+            }
+        });
         conn.on('data', data => {
             try {
                 const msg = typeof data === 'string' ? JSON.parse(data) : data;
@@ -1529,7 +1575,7 @@ function connectToPeer(peerId, nick) {
         });
         conn.on('close', () => { delete peerConnections[peerId]; });
         conn.on('error', () => { delete peerConnections[peerId]; });
-        peerConnections[peerId] = conn; // Optimistic assignment
+        peerConnections[peerId] = conn; 
         return conn;
     } catch (e) { return null; }
 }
@@ -1636,10 +1682,11 @@ function renderDMMessages(peerId) {
     const msgsEl = document.getElementById('dmMessages');
     dm.messages.forEach(m => {
         const div = document.createElement('div');
-        div.className = 'chat-msg' + (m.isSelf ? ' self' : '');
+        // Bug 10 Fix: Separated alignment classes
+        div.className = 'chat-msg' + (m.isSelf ? ' self right' : '');
         let attHtml = '';
         if (m.attachment) {
-            if (m.attachment.type.startsWith('image/')) attHtml = `<div class="chat-msg-attachment"><img src="${m.attachment.dataUrl}" onclick="viewImage('${m.attachment.dataUrl}')"></div>`;
+            if (m.attachment.type.startsWith('image/')) attHtml = `<div class="chat-msg-attachment"><img src="${m.attachment.dataUrl}" onclick="viewImage(this.src)"></div>`;
             else if (m.attachment.type.startsWith('video/')) attHtml = `<div class="chat-msg-attachment"><video src="${m.attachment.dataUrl}" controls></video></div>`;
             else attHtml = `<div class="chat-msg-attachment"><a class="file-att" href="${m.attachment.dataUrl}" download="${escapeHtml(m.attachment.name)}" style="font-size:0.8rem;">${escapeHtml(m.attachment.name)}</a></div>`;
         }
@@ -1676,15 +1723,22 @@ function sendDM() {
     const msg = { from: currentUser.id, text, attachment: att, time: Date.now(), isSelf: true };
     db.dmHistory[activeDMId].messages.push(msg);
     db.dmHistory[activeDMId].lastMessage = text;
-    saveDB(db);
     
     let conn = peerConnections[activeDMId];
+    const payload = JSON.stringify({ type: 'dm', fromId: currentUser.id, fromNick: currentUser.nick, text, attachment: att });
+    
     if (!conn || !conn.open) {
         connectToPeer(activeDMId, db.dmHistory[activeDMId].nick);
-        showToast('User may be offline. Message saved.', 'warning');
+        // Bug 5 Fix: Queue unsent messages
+        if (!db.pendingDMs) db.pendingDMs = {};
+        if (!db.pendingDMs[activeDMId]) db.pendingDMs[activeDMId] = [];
+        db.pendingDMs[activeDMId].push({ type: 'dm', fromId: currentUser.id, fromNick: currentUser.nick, text, attachment: att });
+        showToast('User may be offline. Message queued.', 'warning');
     } else {
-        conn.send(JSON.stringify({ type: 'dm', fromId: currentUser.id, fromNick: currentUser.nick, text, attachment: att }));
+        conn.send(payload);
     }
+    
+    saveDB(db);
     if (att) clearAttachment('chat');
     input.value = '';
     renderDMMessages(activeDMId);
@@ -1857,15 +1911,21 @@ function appendChatMsg(author, text, role, attachment, time) {
         const db = getDB();
         const align = db.settings?.chatAlign || 'me-right';
         let isSelf = role === 'self';
+        
+        // Bug 10 Fix: Use 'right' for alignment, 'self' for color
         let msgClass = 'chat-msg';
-        if (align === 'me-right') { msgClass += isSelf ? ' self' : ''; }
-        else if (align === 'me-left') { msgClass += !isSelf ? ' self' : ''; }
-        else if (align === 'all-left') { }
-        else if (align === 'all-right') { msgClass += ' self'; }
+        let isRight = false;
+        if (align === 'me-right') { isRight = isSelf; }
+        else if (align === 'me-left') { isRight = !isSelf; }
+        else if (align === 'all-left') { isRight = false; }
+        else if (align === 'all-right') { isRight = true; }
+        
+        if (isRight) msgClass += ' right';
+        if (isSelf) msgClass += ' self';
         
         let attHtml = '';
         if (attachment) {
-            if (attachment.type.startsWith('image/')) attHtml = `<div class="chat-msg-attachment"><img src="${attachment.dataUrl}" onclick="viewImage('${attachment.dataUrl}')"></div>`;
+            if (attachment.type.startsWith('image/')) attHtml = `<div class="chat-msg-attachment"><img src="${attachment.dataUrl}" onclick="viewImage(this.src)"></div>`;
             else if (attachment.type.startsWith('video/')) attHtml = `<div class="chat-msg-attachment"><video src="${attachment.dataUrl}" controls></video></div>`;
             else attHtml = `<div class="chat-msg-attachment"><a class="file-att" href="${attachment.dataUrl}" download="${escapeHtml(attachment.name)}" style="font-size:0.8rem;">${escapeHtml(attachment.name)}</a></div>`;
         }
