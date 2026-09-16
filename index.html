@@ -149,7 +149,7 @@ input:focus,textarea:focus,select:focus { border-color:var(--accent); background
 .action-btn:hover { border-color:var(--text-muted); color:var(--text-normal); }
 .action-btn.active-like { border-color:var(--success); color:var(--success); background:rgba(82,216,105,0.1); }
 .action-btn.active-dislike { border-color:var(--danger); color:var(--danger); background:rgba(255,77,77,0.1); }
-.action-btn svg { width:14px; height:14px; }
+.action-btn.svg { width:14px; height:14px; }
 
 .reply-section { margin-top:12px; padding-left:48px; display:flex; flex-direction:column; gap:8px; }
 .reply-card { background:var(--bg-tertiary); padding:9px 12px; border-radius:6px; border-left:2px solid var(--accent); }
@@ -254,12 +254,27 @@ input:focus,textarea:focus,select:focus { border-color:var(--accent); background
 @keyframes slideUp { from { transform:translateY(15px); opacity:0; } to { transform:translateY(0); opacity:1; } }
 .modal h3 { margin-bottom:14px; font-size:1.15rem; }
 .modal-actions { display:flex; gap:10px; justify-content:flex-end; margin-top:18px; }
+.modal.legal { max-width:560px; }
+.modal.legal .legal-body { font-size:0.88rem; line-height:1.55; color:var(--text-normal); max-height:55vh; overflow-y:auto; }
+.modal.legal .legal-body h4 { margin:14px 0 6px; font-size:0.95rem; }
+.modal.legal .legal-body p { margin-bottom:10px; color:var(--text-muted); }
 
 .hidden { display:none !important; }
 .text-muted { color:var(--text-muted); font-size:0.85rem; }
 .text-center { text-align:center; }
 .mt-10 { margin-top:10px; }
 .mt-20 { margin-top:20px; }
+
+.checkbox-row { display:flex; align-items:flex-start; gap:10px; margin-bottom:14px; font-size:0.88rem; color:var(--text-muted); }
+.checkbox-row input { margin-top:3px; flex-shrink:0; }
+.checkbox-row a { color:var(--accent); cursor:pointer; text-decoration:underline; }
+
+.analytics-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:18px; }
+.analytics-card { background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:10px; padding:16px; }
+.analytics-card h4 { font-size:0.9rem; margin-bottom:10px; color:var(--text-muted); }
+.analytics-card .big-num { font-size:1.8rem; font-weight:700; }
+.chart-box { background:var(--bg-tertiary); border-radius:8px; padding:12px; height:160px; position:relative; }
+.chart-box canvas { width:100% !important; height:100% !important; }
 
 @media (max-width:768px) {
     .app-layout { flex-direction:column; }
@@ -279,6 +294,7 @@ input:focus,textarea:focus,select:focus { border-color:var(--accent); background
     .main-header { padding:12px 14px; }
     .main-header h2 { font-size:1.05rem; }
     .profile-info .user-avatar { width:64px; height:64px; font-size:1.6rem; margin-top:-40px; }
+    .analytics-grid { grid-template-columns:1fr; }
 }
 
 .backdrop { position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:90; display:none; }
@@ -305,7 +321,7 @@ input:focus,textarea:focus,select:focus { border-color:var(--accent); background
                 <input type="email" id="loginEmail" placeholder="you@example.com" autocomplete="email"></div>
             <div class="form-group"><label>Password</label>
                 <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password"></div>
-            <button class="btn btn-primary btn-block" onclick="login()">Login</button>
+            <button class="btn btn-primary btn-block" id="loginBtn" onclick="login()">Login</button>
             <div class="text-center text-muted mt-10" style="font-size:0.8rem;">OR</div>
             <button class="btn btn-secondary btn-block mt-10" onclick="toggleAuthView()">Create Account</button>
             <button class="btn btn-secondary btn-block mt-10" onclick="loginAsGuest()">Continue as Guest</button>
@@ -318,7 +334,15 @@ input:focus,textarea:focus,select:focus { border-color:var(--accent); background
                 <input type="email" id="regEmail" placeholder="you@example.com" autocomplete="email"></div>
             <div class="form-group"><label>Password</label>
                 <input type="password" id="regPassword" placeholder="Min 6 characters" autocomplete="new-password"></div>
-            <button class="btn btn-primary btn-block" onclick="register()">Create Account</button>
+            <div class="checkbox-row">
+                <input type="checkbox" id="regAgeCheck">
+                <label for="regAgeCheck">I confirm that I am 12 years of age or older.</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="regTermsCheck">
+                <label for="regTermsCheck">I have read and agree to the <a onclick="showTerms()">Terms of Service</a> and <a onclick="showPrivacy()">Privacy Policy</a>.</label>
+            </div>
+            <button class="btn btn-primary btn-block" id="regBtn" onclick="register()">Create Account</button>
             <div class="text-center text-muted mt-10" style="font-size:0.8rem;">OR</div>
             <button class="btn btn-secondary btn-block mt-10" onclick="toggleAuthView()">Back to Login</button>
             <p id="regError" style="color:var(--danger); font-size:0.85rem; margin-top:12px; text-align:center;" class="hidden"></p>
@@ -347,6 +371,10 @@ input:focus,textarea:focus,select:focus { border-color:var(--accent); background
             <div class="nav-item" data-view="profile" onclick="switchView('profile')">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
                 Profile
+            </div>
+            <div class="nav-item" data-view="analytics" onclick="switchView('analytics')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10"></path><path d="M12 20V4"></path><path d="M6 20v-6"></path></svg>
+                Analytics
             </div>
             <div class="nav-item" data-view="settings" onclick="switchView('settings')">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
@@ -484,6 +512,22 @@ input:focus,textarea:focus,select:focus { border-color:var(--accent); background
             </div>
         </div>
 
+        <!-- Analytics -->
+        <div class="view" id="view-analytics">
+            <div class="main-header">
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <button class="menu-toggle" onclick="toggleSidebar()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+                    </button>
+                    <h2>Network Analytics</h2>
+                </div>
+                <span class="text-muted" id="analyticsUpdated">Updated daily</span>
+            </div>
+            <div class="main-body">
+                <div class="settings-container" id="analyticsContent"></div>
+            </div>
+        </div>
+
         <!-- Settings -->
         <div class="view" id="view-settings">
             <div class="main-header">
@@ -594,7 +638,6 @@ function escapeHtml(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
         .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
 }
-// For use inside a single-quoted JS string that itself lives in an HTML attribute.
 function jsq(v) {
     const s = String(v == null ? '' : v).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     return escapeHtml(s);
@@ -615,16 +658,27 @@ function viewImage(src) {
 }
 
 /* ============================================================
-   Local store
+   Local store (split for efficiency)
    ============================================================ */
-const DB_KEY = 'yipyap_db_v6';
+const DB_KEY = 'yipyap_db_v7';
+const ANALYTICS_KEY = 'yipyap_analytics_v1';
+
 function defaultDB() {
     return {
         users: {}, session: null,
         following: [], followers: [],
         myPosts: [], feedCache: [], interestProfile: {},
         likedPosts: [], dislikedPosts: [], viewedPosts: [],
-        settings: { theme:'dark', notifications:false, sound:true, chatAlign:'me-right' }
+        reportsMade: {},
+        reputation: {},
+        settings: {
+            theme: 'dark',
+            notifications: false,
+            sound: true,
+            chatAlign: 'me-right',
+            filterLanguage: true,
+            shareAnalytics: false
+        }
     };
 }
 function getDB() {
@@ -636,11 +690,66 @@ function getDB() {
 function saveDB(db) {
     try { localStorage.setItem(DB_KEY, JSON.stringify(db)); }
     catch (e) {
-        showToast('Storage full! Please clear old data.', 'error');
-        console.error('localStorage quota exceeded', e);
+        showToast('Storage full! Clear old data in Settings.', 'error');
+        console.error('localStorage quota', e);
     }
 }
+
+function defaultAnalytics() {
+    return {
+        daily: {},          // YYYY-MM-DD -> { posts:0, likes:0, reports:0, messages:0, sessions:0 }
+        totals: { posts:0, likes:0, reports:0, messages:0, sessions:0 },
+        lastDay: null
+    };
+}
+function getAnalytics() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(ANALYTICS_KEY));
+        return raw ? Object.assign(defaultAnalytics(), raw) : defaultAnalytics();
+    } catch { return defaultAnalytics(); }
+}
+function saveAnalytics(a) {
+    try { localStorage.setItem(ANALYTICS_KEY, JSON.stringify(a)); } catch {}
+}
+function trackEvent(type, amount = 1) {
+    const a = getAnalytics();
+    const day = new Date().toISOString().slice(0, 10);
+    if (!a.daily[day]) a.daily[day] = { posts:0, likes:0, reports:0, messages:0, sessions:0 };
+    if (a.daily[day][type] !== undefined) a.daily[day][type] += amount;
+    if (a.totals[type] !== undefined) a.totals[type] += amount;
+    a.lastDay = day;
+    // prune older than 30 days
+    const keys = Object.keys(a.daily).sort();
+    while (keys.length > 30) {
+        delete a.daily[keys.shift()];
+    }
+    saveAnalytics(a);
+}
+
 let currentUser = null, myPeerId = null;
+let authInFlight = false;
+
+/* ============================================================
+   Profanity filter
+   ============================================================ */
+const BAD_WORDS = [
+    'fuck','fucker','fucking','shit','shitty','asshole','bitch','bastard','cunt','dick','piss','crap',
+    'slut','whore','nigger','nigga','faggot','retard','idiot'
+];
+function censorText(text) {
+    if (!text) return text;
+    const db = getDB();
+    if (!db.settings.filterLanguage) return text;
+    let out = text;
+    BAD_WORDS.forEach(w => {
+        const re = new RegExp('\\b' + w + '\\b', 'gi');
+        out = out.replace(re, m => {
+            if (m.length <= 2) return m[0] + '*';
+            return m[0] + '*'.repeat(m.length - 2) + m[m.length - 1];
+        });
+    });
+    return out;
+}
 
 /* ============================================================
    Auth
@@ -655,45 +764,172 @@ function showAuthError(elId, msg) {
     el.classList.remove('hidden');
     setTimeout(() => el.classList.add('hidden'), 4000);
 }
+
+function showTerms() {
+    showModal('Terms of Service', `
+        <div class="legal-body">
+            <p>Last updated: September 2026</p>
+            <h4>1. Acceptance of Terms</h4>
+            <p>By creating an account or using YipYap you agree to be bound by these Terms of Service. If you do not agree, do not use the service.</p>
+            <h4>2. Eligibility</h4>
+            <p>You must be at least 12 years of age to create an account. By registering you represent that you meet this requirement.</p>
+            <h4>3. Peer-to-Peer Nature</h4>
+            <p>YipYap is a decentralized peer-to-peer application. Content is stored and transmitted directly between users' devices. There is no central server that permanently hosts your posts or messages.</p>
+            <h4>4. User Content</h4>
+            <p>You retain ownership of content you create. By posting you grant other users a limited license to view and share that content within the network. You are solely responsible for the content you post.</p>
+            <h4>5. Prohibited Conduct</h4>
+            <p>You may not post illegal content, harass others, spam, distribute malware, or attempt to disrupt the network. Content that receives reports from 25% or more of its viewers may be automatically removed from the shared feed.</p>
+            <h4>6. Reputation System</h4>
+            <p>Posts and users accumulate a reputation score based on engagement and reports. Low reputation reduces visibility in the ranking algorithm.</p>
+            <h4>7. Termination</h4>
+            <p>You may delete your local data at any time via Settings. Because the network is peer-to-peer, copies of your content may remain on other users' devices.</p>
+            <h4>8. Disclaimer</h4>
+            <p>THE SERVICE IS PROVIDED "AS IS" WITHOUT WARRANTIES OF ANY KIND. WE ARE NOT LIABLE FOR ANY DAMAGES ARISING FROM YOUR USE OF THE NETWORK.</p>
+            <h4>9. Changes</h4>
+            <p>These terms may be updated. Continued use after changes constitutes acceptance.</p>
+        </div>
+    `, [{ label: 'Close', class: 'btn-primary' }], true);
+}
+function showPrivacy() {
+    showModal('Privacy Policy', `
+        <div class="legal-body">
+            <p>Last updated: September 2026</p>
+            <h4>1. Information We Collect</h4>
+            <p>YipYap stores data only on your device and on the devices of peers you connect to. We do not operate a central database of user accounts or posts.</p>
+            <h4>2. Account Data</h4>
+            <p>Nickname, email (if provided), password hash, and optional bio are stored locally in your browser. Password is never stored in plain text.</p>
+            <h4>3. Content & Communications</h4>
+            <p>Posts, replies, likes, reports, and chat messages are transmitted peer-to-peer and may be cached by other connected clients. Attachments are limited in size and stored as temporary data URLs.</p>
+            <h4>4. Analytics</h4>
+            <p>If you enable "Share anonymous usage data", aggregate counters (posts created, likes, reports, session length) are kept locally and may be exchanged with the directory peer for network-wide daily graphs. No personally identifiable information is included.</p>
+            <h4>5. Local Storage</h4>
+            <p>All settings, feed cache, interest profile, and reputation data remain in your browser's localStorage until you clear them.</p>
+            <h4>6. Third Parties</h4>
+            <p>The application loads PeerJS from a public CDN solely to establish WebRTC connections. No analytics or advertising third parties are used.</p>
+            <h4>7. Children's Privacy</h4>
+            <p>The service is not directed at children under 12. We do not knowingly collect data from anyone under 12.</p>
+            <h4>8. Your Choices</h4>
+            <p>You may clear feed cache, reset the ranking algorithm, wipe all local data, or disable analytics at any time from Settings.</p>
+            <h4>9. Contact</h4>
+            <p>Because there is no central operator, privacy questions should be directed to the community or the maintainers of any public directory instance you choose to connect to.</p>
+        </div>
+    `, [{ label: 'Close', class: 'btn-primary' }], true);
+}
+
 async function register() {
+    if (authInFlight) return;
     const nick = document.getElementById('regNick').value.trim();
     const email = document.getElementById('regEmail').value.trim().toLowerCase();
     const pass = document.getElementById('regPassword').value;
-    if (!nick || !email || pass.length < 6) { showAuthError('regError', 'Fill all fields. Password min 6 chars.'); return; }
+    const ageOk = document.getElementById('regAgeCheck').checked;
+    const termsOk = document.getElementById('regTermsCheck').checked;
+
+    if (!nick || !email || pass.length < 6) {
+        showAuthError('regError', 'Fill all fields. Password min 6 characters.');
+        return;
+    }
+    if (!ageOk) {
+        showAuthError('regError', 'You must confirm you are 12 years of age or older.');
+        return;
+    }
+    if (!termsOk) {
+        showAuthError('regError', 'You must agree to the Terms of Service and Privacy Policy.');
+        return;
+    }
+
+    authInFlight = true;
+    document.getElementById('regBtn').disabled = true;
+
     const db = getDB();
-    if (Object.values(db.users).some(u => u.email === email)) { showAuthError('regError', 'Email already registered.'); return; }
-    const user = { id:'yp_'+Date.now(), nick, email, passHash: await hashPassword(pass), createdAt: Date.now(), bio:'' };
+    if (Object.values(db.users).some(u => u.email === email)) {
+        showAuthError('regError', 'Email already registered.');
+        authInFlight = false;
+        document.getElementById('regBtn').disabled = false;
+        return;
+    }
+
+    const user = {
+        id: 'yp_' + Date.now(),
+        nick,
+        email,
+        passHash: await hashPassword(pass),
+        createdAt: Date.now(),
+        bio: '',
+        ageConfirmed: true,
+        termsAcceptedAt: Date.now()
+    };
     db.users[user.id] = user;
     db.session = user.id;
+    if (!db.reputation[user.id]) db.reputation[user.id] = 50;
     saveDB(db);
+    trackEvent('sessions');
     initApp(user);
+    authInFlight = false;
 }
+
 async function login() {
+    if (authInFlight) return;
     const email = document.getElementById('loginEmail').value.trim().toLowerCase();
-    const pass  = document.getElementById('loginPassword').value;
-    if (!email || !pass) { showAuthError('loginError', 'Fill all fields.'); return; }
+    const pass = document.getElementById('loginPassword').value;
+    if (!email || !pass) {
+        showAuthError('loginError', 'Fill all fields.');
+        return;
+    }
+
+    authInFlight = true;
+    document.getElementById('loginBtn').disabled = true;
+
     const db = getDB();
     const user = Object.values(db.users).find(u => u.email === email);
-    if (!user) { showAuthError('loginError', 'User not found.'); return; }
-    if (user.passHash !== await hashPassword(pass)) { showAuthError('loginError', 'Incorrect password.'); return; }
+    if (!user) {
+        showAuthError('loginError', 'User not found.');
+        authInFlight = false;
+        document.getElementById('loginBtn').disabled = false;
+        return;
+    }
+    if (user.passHash !== await hashPassword(pass)) {
+        showAuthError('loginError', 'Incorrect password.');
+        authInFlight = false;
+        document.getElementById('loginBtn').disabled = false;
+        return;
+    }
     db.session = user.id;
     saveDB(db);
+    trackEvent('sessions');
     initApp(user);
+    authInFlight = false;
 }
+
 function loginAsGuest() {
-    const nick = 'Guest' + Math.floor(Math.random() * 1000);
-    const user = { id:'guest_'+Date.now(), nick, email:null, passHash:null, isGuest:true, createdAt:Date.now(), bio:'' };
+    const nick = 'Guest' + Math.floor(Math.random() * 900 + 100);
+    const user = {
+        id: 'guest_' + Date.now(),
+        nick,
+        email: null,
+        passHash: null,
+        isGuest: true,
+        createdAt: Date.now(),
+        bio: ''
+    };
+    // guests are not written into db.users permanently
     const db = getDB();
-    db.users[user.id] = user;
     db.session = user.id;
+    // temporary in-memory only
+    currentUser = user;
+    myPeerId = user.id;
+    if (!db.reputation[user.id]) db.reputation[user.id] = 40;
     saveDB(db);
+    trackEvent('sessions');
     initApp(user);
 }
+
 function logout() {
     showModal('Logout', '<p>Are you sure you want to log out?</p>', [
         { label: 'Cancel', class: 'btn-secondary' },
         { label: 'Logout', class: 'btn-danger', onClick: () => {
-            const db = getDB(); db.session = null; saveDB(db);
+            const db = getDB();
+            db.session = null;
+            saveDB(db);
             [directoryPeer, hostPeer, guestPeer].forEach(p => { try { p && p.destroy(); } catch {} });
             location.reload();
         }}
@@ -719,6 +955,7 @@ function initApp(user) {
     renderMyPosts();
     renderProfile();
     renderSettings();
+    renderAnalytics();
     initBackgroundPeer();
 }
 
@@ -736,6 +973,7 @@ function switchView(viewName) {
     if (viewName === 'settings') renderSettings();
     if (viewName === 'myposts')  renderMyPosts();
     if (viewName === 'feed')     renderFeed();
+    if (viewName === 'analytics') renderAnalytics();
 }
 function toggleSidebar(force) {
     const sb = document.getElementById('sidebar');
@@ -746,7 +984,7 @@ function toggleSidebar(force) {
 }
 
 /* ============================================================
-   Toasts / modal / sound
+   Toasts / modal / sound / notifications
    ============================================================ */
 function showToast(msg, type = 'info', duration = 3000) {
     const c = document.getElementById('toastContainer');
@@ -762,7 +1000,9 @@ function showToast(msg, type = 'info', duration = 3000) {
 }
 function notify(title, body) {
     const db = getDB();
-    if (db.settings?.notifications && Notification.permission === 'granted') new Notification(title, { body });
+    if (db.settings?.notifications && Notification.permission === 'granted') {
+        try { new Notification(title, { body, silent: !db.settings.sound }); } catch {}
+    }
     if (db.settings?.sound) playSound();
 }
 function playSound() {
@@ -776,13 +1016,13 @@ function playSound() {
         osc.start(); osc.stop(ctx.currentTime + 0.3);
     } catch {}
 }
-function showModal(title, content, actions = []) {
+function showModal(title, content, actions = [], isLegal = false) {
     const c = document.getElementById('modalContainer');
     const o = document.createElement('div');
     o.className = 'modal-overlay';
     o.onclick = e => { if (e.target === o) o.remove(); };
     const ah = actions.map((a, i) => `<button class="btn ${a.class || 'btn-secondary'}" data-act="${i}">${a.label}</button>`).join('');
-    o.innerHTML = `<div class="modal"><h3>${escapeHtml(title)}</h3>${content}<div class="modal-actions">${ah}</div></div>`;
+    o.innerHTML = `<div class="modal${isLegal ? ' legal' : ''}"><h3>${escapeHtml(title)}</h3>${content}<div class="modal-actions">${ah}</div></div>`;
     actions.forEach((a, i) => {
         o.querySelector(`[data-act="${i}"]`).onclick = () => {
             if (a.onClick) a.onClick(o);
@@ -848,9 +1088,10 @@ function renderChatAttachment(att) {
 }
 
 /* ============================================================
-   Ranking algorithm + feed visibility rule
+   Ranking + reputation + reports
    ============================================================ */
-const FEED_ALGO_THRESHOLD = 100;   // post count at which the algorithm turns on
+const FEED_ALGO_THRESHOLD = 40;
+const REPORT_THRESHOLD = 0.25; // 25% of viewers
 
 function tokenize(text) { return (text || '').toLowerCase().match(/\b[a-z0-9]{3,}\b/g) || []; }
 
@@ -858,27 +1099,84 @@ function updateInterestProfileDB(db, text, weight) {
     if (!db.interestProfile) db.interestProfile = {};
     tokenize(text).forEach(w => {
         db.interestProfile[w] = (db.interestProfile[w] || 0) + weight;
-        if (db.interestProfile[w] > 10) db.interestProfile[w] = 10;
-        if (db.interestProfile[w] < -5) db.interestProfile[w] = -5;
+        if (db.interestProfile[w] > 12) db.interestProfile[w] = 12;
+        if (db.interestProfile[w] < -6) db.interestProfile[w] = -6;
     });
 }
+
+function getUserRep(userId) {
+    const db = getDB();
+    return db.reputation[userId] != null ? db.reputation[userId] : 50;
+}
+function adjustReputation(userId, delta) {
+    const db = getDB();
+    if (!db.reputation[userId]) db.reputation[userId] = 50;
+    db.reputation[userId] = Math.max(0, Math.min(100, db.reputation[userId] + delta));
+    saveDB(db);
+}
+
 function scorePost(post, db) {
     db = db || getDB();
     const profile = db.interestProfile || {};
     let s = 0;
-    tokenize((post.text || '') + ' ' + (post.nick || '')).forEach(w => { if (profile[w]) s += profile[w]; });
-    s += ((post.likes || 0) - (post.dislikes || 0)) * 1.5;
-    s += (post.replies ? post.replies.length * 0.8 : 0);
-    if (db.following.some(f => f.peerId === post.authorId)) s += 3;
-    s -= ((Date.now() - post.time) / 3600000) * 0.15;
+
+    // personal interest match (addictive)
+    tokenize((post.text || '') + ' ' + (post.nick || '')).forEach(w => {
+        if (profile[w]) s += profile[w] * 1.8;
+    });
+
+    // engagement
+    s += ((post.likes || 0) - (post.dislikes || 0)) * 2.2;
+    s += (post.replies ? post.replies.length * 1.4 : 0);
+
+    // following boost
+    if (db.following.some(f => f.peerId === post.authorId)) s += 5;
+
+    // freshness (strong decay so feed feels alive)
+    const hours = (Date.now() - post.time) / 3600000;
+    s -= hours * 0.35;
+    if (hours < 1) s += 4;           // very recent boost
+    if (hours < 6) s += 2;
+
+    // reputation of author (0-100 → multiplier)
+    const rep = getUserRep(post.authorId);
+    s *= (0.55 + (rep / 100) * 0.9);
+
+    // report penalty (hard)
+    const viewers = Math.max(1, post.viewers || 1);
+    const reportCount = (post.reports || []).length;
+    const reportRatio = reportCount / viewers;
+    s -= reportRatio * 40;
+    if (reportCount >= 2) s -= reportCount * 3;
+
+    // tiny randomness so ranking feels less static
+    s += (Math.sin(post.time / 100000) * 0.8);
+
     return s;
 }
-// Below FEED_ALGO_THRESHOLD this is just a chronological global chat.
-// Above it, disliked posts are filtered out and the rest are ranked.
+
 function getVisibleFeed() {
     const db = getDB();
+    // auto-remove posts that hit the 25% report threshold
+    const toRemove = [];
+    globalFeed.forEach(p => {
+        const viewers = Math.max(1, p.viewers || 1);
+        const reports = (p.reports || []).length;
+        if (reports / viewers >= REPORT_THRESHOLD && reports >= 2) {
+            toRemove.push(p.id);
+        }
+    });
+    if (toRemove.length) {
+        globalFeed = globalFeed.filter(p => !toRemove.includes(p.id));
+        const d = getDB();
+        d.feedCache = globalFeed;
+        d.myPosts = d.myPosts.filter(p => !toRemove.includes(p.id));
+        saveDB(d);
+        toRemove.forEach(id => broadcastToFeed({ type: 'delete_post', postId: id }));
+    }
+
     if (globalFeed.length < FEED_ALGO_THRESHOLD) {
-        return { mode:'chat', posts: [...globalFeed].sort((a, b) => b.time - a.time) };
+        return { mode: 'chat', posts: [...globalFeed].sort((a, b) => b.time - a.time) };
     }
     const disliked = new Set(db.dislikedPosts);
     const ranked = globalFeed
@@ -886,7 +1184,21 @@ function getVisibleFeed() {
         .map(p => ({ p, s: scorePost(p, db) }))
         .sort((a, b) => b.s - a.s)
         .map(x => x.p);
-    return { mode:'algo', posts: ranked };
+    return { mode: 'algo', posts: ranked };
+}
+
+function markPostViewed(post) {
+    if (!post || !currentUser) return;
+    if (!post.viewers) post.viewers = 0;
+    if (!post.viewedBy) post.viewedBy = [];
+    if (post.viewedBy.includes(currentUser.id)) return;
+    post.viewedBy.push(currentUser.id);
+    post.viewers = post.viewedBy.length;
+    // keep viewedBy small
+    if (post.viewedBy.length > 80) post.viewedBy = post.viewedBy.slice(-60);
+    const db = getDB();
+    db.feedCache = globalFeed;
+    saveDB(db);
 }
 
 /* ============================================================
@@ -899,7 +1211,7 @@ let activeFeedConns = [];
 let feedConn = null;
 let dirRetryTimer = null;
 let activePublicRooms = [];
-const DIR_ID = 'yipyap-dir-v5';
+const DIR_ID = 'yipyap-dir-v6';
 
 function updateFeedStatus() {
     const el = document.getElementById('feedStatus');
@@ -945,7 +1257,9 @@ function initBackgroundPeer() {
                         if (globalFeed.length > 200) globalFeed.length = 200;
                         const d = getDB(); d.feedCache = globalFeed; saveDB(d);
                         renderFeed();
-                        if (msg.post.authorId !== currentUser.id) notify('New post from ' + msg.post.nick, (msg.post.text || '').slice(0, 80));
+                        if (msg.post.authorId !== currentUser.id) {
+                            notify('New post from ' + msg.post.nick, (msg.post.text || '').slice(0, 80));
+                        }
                     }
                     activeFeedConns.forEach(c => { if (c !== conn && c.open) c.send(JSON.stringify({ type:'new_post', post: msg.post })); });
                 } else if (msg.type === 'update_post') {
@@ -961,6 +1275,8 @@ function initBackgroundPeer() {
                     const d = getDB(); d.feedCache = globalFeed; saveDB(d);
                     renderFeed();
                     activeFeedConns.forEach(c => { if (c !== conn && c.open) c.send(JSON.stringify({ type:'delete_post', postId: msg.postId })); });
+                } else if (msg.type === 'analytics_ping' && getDB().settings.shareAnalytics) {
+                    // lightweight aggregate exchange could go here
                 }
             } catch {}
         });
@@ -1002,7 +1318,7 @@ function becomeFeedClient() {
                     globalFeed = msg.posts || [];
                     const db = getDB();
                     const known = new Set(globalFeed.map(p => p.id));
-                    db.feedCache.forEach(p => { if (!known.has(p.id)) globalFeed.push(p); });
+                    (db.feedCache || []).forEach(p => { if (!known.has(p.id)) globalFeed.push(p); });
                     globalFeed.sort((a, b) => b.time - a.time);
                     if (globalFeed.length > 200) globalFeed.length = 200;
                     db.feedCache = globalFeed; saveDB(db);
@@ -1013,7 +1329,9 @@ function becomeFeedClient() {
                         if (globalFeed.length > 200) globalFeed.length = 200;
                         const db = getDB(); db.feedCache = globalFeed; saveDB(db);
                         renderFeed();
-                        if (msg.post.authorId !== currentUser.id) notify('New post from ' + msg.post.nick, (msg.post.text || '').slice(0, 80));
+                        if (msg.post.authorId !== currentUser.id) {
+                            notify('New post from ' + msg.post.nick, (msg.post.text || '').slice(0, 80));
+                        }
                     }
                 } else if (msg.type === 'update_post') {
                     const i = globalFeed.findIndex(p => p.id === msg.post.id);
@@ -1055,15 +1373,18 @@ function broadcastToFeed(msg) {
    ============================================================ */
 function postMessage() {
     const input = document.getElementById('postInput');
-    const text = input.value.trim();
+    let text = input.value.trim();
     const att = pendingAttachment && pendingAttachment.context === 'post' ? pendingAttachment : null;
     if (!text && !att) return;
+
+    text = censorText(text);
 
     const post = {
         id: 'p_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
         authorId: currentUser.id, nick: currentUser.nick, email: currentUser.email,
         text, attachment: att, time: Date.now(),
-        likes: 0, dislikes: 0, likedBy: [], dislikedBy: [], replies: []
+        likes: 0, dislikes: 0, likedBy: [], dislikedBy: [],
+        replies: [], reports: [], viewers: 1, viewedBy: [currentUser.id]
     };
     input.value = '';
     if (att) clearAttachment('post');
@@ -1074,8 +1395,10 @@ function postMessage() {
     if (globalFeed.length > 200) globalFeed.length = 200;
     db.feedCache = globalFeed;
     updateInterestProfileDB(db, text, 2);
+    if (!db.reputation[currentUser.id]) db.reputation[currentUser.id] = 50;
     saveDB(db);
 
+    trackEvent('posts');
     renderFeed();
     renderMyPosts();
     broadcastToFeed({ type:'new_post', post });
@@ -1097,7 +1420,7 @@ function renderFeed() {
         } else {
             const hidden = total - posts.length;
             banner.innerHTML = `
-                <span>Ranked by your interests.${hidden > 0 ? ` ${hidden} post${hidden === 1 ? '' : 's'} hidden.` : ''}</span>
+                <span>Ranked by interest, engagement & reputation.${hidden > 0 ? ` ${hidden} hidden.` : ''}</span>
                 <span class="pill">Algorithm</span>`;
         }
     }
@@ -1106,7 +1429,10 @@ function renderFeed() {
         el.innerHTML = '<div class="empty-state"><div class="empty-state-icon">~</div><div class="empty-state-text">No posts yet</div><div class="empty-state-sub">Be the first to share something!</div></div>';
         return;
     }
-    el.innerHTML = posts.map(p => renderPostCard(p, false)).join('');
+    el.innerHTML = posts.map(p => {
+        markPostViewed(p);
+        return renderPostCard(p, false);
+    }).join('');
     attachPostHandlers(el);
 }
 
@@ -1128,6 +1454,7 @@ function renderPostCard(p, isMyPost) {
     const disliked = db.dislikedPosts.includes(p.id);
     const canDelete = isMyPost || p.authorId === currentUser.id;
     const initial = (p.nick || '?').charAt(0).toUpperCase();
+    const reportCount = (p.reports || []).length;
 
     const repliesHtml = (p.replies || []).map(r => `
         <div class="reply-card">
@@ -1146,6 +1473,7 @@ function renderPostCard(p, isMyPost) {
                     <div class="post-header">
                         <span class="post-author" onclick="viewUserProfile('${jsq(p.authorId)}','${jsq(p.nick)}')">${escapeHtml(p.nick)}</span>
                         <span class="post-time">${new Date(p.time).toLocaleString()}</span>
+                        ${reportCount > 0 ? `<span class="post-time" style="color:var(--warning)">· ${reportCount} report${reportCount>1?'s':''}</span>` : ''}
                     </div>
                     <div class="post-text">${escapeHtml(p.text)}</div>
                     ${renderAttachment(p.attachment)}
@@ -1161,6 +1489,9 @@ function renderPostCard(p, isMyPost) {
                         <button class="action-btn" data-act="reply" data-pid="${p.id}">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
                             ${(p.replies || []).length}
+                        </button>
+                        <button class="action-btn" data-act="report" data-pid="${p.id}" title="Report">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"></path><line x1="4" y1="22" x2="4" y2="15"></line></svg>
                         </button>
                         ${canDelete ? `<button class="action-btn" data-act="delete" data-pid="${p.id}" style="margin-left:auto;color:var(--danger);border-color:var(--danger);">Delete</button>` : ''}
                     </div>
@@ -1185,6 +1516,7 @@ function attachPostHandlers(el) {
             else if (act === 'dislike') handleInteraction(pid, 'dislike');
             else if (act === 'reply') toggleReplyInput(pid);
             else if (act === 'delete') deletePost(pid);
+            else if (act === 'report') reportPost(pid);
         };
     });
 }
@@ -1206,7 +1538,9 @@ function handleInteraction(postId, type) {
             db.likedPosts.push(postId);
             post.likes = (post.likes || 0) + 1;
             post.likedBy.push(currentUser.id);
-            updateInterestProfileDB(db, post.text, 2);
+            updateInterestProfileDB(db, post.text, 2.5);
+            adjustReputation(post.authorId, 0.4);
+            trackEvent('likes');
             if (db.dislikedPosts.includes(postId)) {
                 db.dislikedPosts = db.dislikedPosts.filter(id => id !== postId);
                 post.dislikes = Math.max(0, (post.dislikes || 0) - 1);
@@ -1223,7 +1557,8 @@ function handleInteraction(postId, type) {
             db.dislikedPosts.push(postId);
             post.dislikes = (post.dislikes || 0) + 1;
             post.dislikedBy.push(currentUser.id);
-            updateInterestProfileDB(db, post.text, -2);
+            updateInterestProfileDB(db, post.text, -2.5);
+            adjustReputation(post.authorId, -0.8);
             if (db.likedPosts.includes(postId)) {
                 db.likedPosts = db.likedPosts.filter(id => id !== postId);
                 post.likes = Math.max(0, (post.likes || 0) - 1);
@@ -1238,24 +1573,70 @@ function handleInteraction(postId, type) {
     renderMyPosts();
 }
 
+function reportPost(pid) {
+    const db = getDB();
+    if (db.reportsMade[pid]) {
+        showToast('You already reported this post', 'warning');
+        return;
+    }
+    showModal('Report Post', `
+        <p style="margin-bottom:12px;font-size:0.9rem;color:var(--text-muted)">Select a reason. Posts reported by 25% or more of their viewers are automatically removed.</p>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+            <button class="btn btn-secondary" data-reason="spam">Spam</button>
+            <button class="btn btn-secondary" data-reason="harassment">Harassment</button>
+            <button class="btn btn-secondary" data-reason="inappropriate">Inappropriate content</button>
+            <button class="btn btn-secondary" data-reason="other">Other</button>
+        </div>
+    `, [
+        { label: 'Cancel', class: 'btn-secondary' }
+    ]);
+
+    // attach reason handlers after modal is in DOM
+    setTimeout(() => {
+        document.querySelectorAll('[data-reason]').forEach(btn => {
+            btn.onclick = () => {
+                const reason = btn.dataset.reason;
+                const post = globalFeed.find(p => p.id === pid) || db.myPosts.find(p => p.id === pid);
+                if (!post) return;
+                if (!post.reports) post.reports = [];
+                post.reports.push({ userId: currentUser.id, reason, time: Date.now() });
+                db.reportsMade[pid] = true;
+                adjustReputation(post.authorId, -3);
+                trackEvent('reports');
+                db.feedCache = globalFeed;
+                saveDB(db);
+                broadcastToFeed({ type: 'update_post', post });
+                renderFeed();
+                showToast('Report submitted', 'success');
+                document.querySelector('.modal-overlay')?.remove();
+            };
+        });
+    }, 30);
+}
+
 function toggleReplyInput(pid) { document.getElementById('replies_' + pid)?.classList.toggle('hidden'); }
 function sendReply(pid) {
     const input = document.getElementById('replyText_' + pid);
     if (!input) return;
-    const text = input.value.trim();
+    let text = input.value.trim();
     if (!text) return;
+    text = censorText(text);
     const db = getDB();
     const post = globalFeed.find(p => p.id === pid) || db.myPosts.find(p => p.id === pid);
     if (!post) return;
     if (!post.replies) post.replies = [];
     post.replies.push({ authorId: currentUser.id, nick: currentUser.nick, text, time: Date.now() });
     updateInterestProfileDB(db, post.text, 3);
+    adjustReputation(post.authorId, 0.6);
     input.value = '';
     document.getElementById('replies_' + pid)?.classList.add('hidden');
     db.feedCache = globalFeed;
     saveDB(db);
     broadcastToFeed({ type:'update_post', post });
     renderFeed();
+    if (post.authorId !== currentUser.id) {
+        notify('New reply on your post', text.slice(0, 60));
+    }
 }
 function deletePost(pid) {
     showModal('Delete Post', '<p>Are you sure you want to delete this post?</p>', [
@@ -1313,6 +1694,7 @@ function renderProfile() {
     const followersCount = db.followers.filter(f => f.peerId === userId).length;
     const isFollowing = db.following.some(f => f.peerId === userId);
     const initial = (user.nick || '?').charAt(0).toUpperCase();
+    const rep = getUserRep(userId);
 
     headerActions.innerHTML = isMe
         ? `<button class="btn btn-secondary btn-small" onclick="editProfile()">Edit</button>`
@@ -1334,6 +1716,7 @@ function renderProfile() {
                         <div class="stat"><div class="stat-num">${userPosts.length}</div><div class="stat-label">Posts</div></div>
                         <div class="stat"><div class="stat-num">${followingCount}</div><div class="stat-label">Following</div></div>
                         <div class="stat"><div class="stat-num">${followersCount}</div><div class="stat-label">Followers</div></div>
+                        <div class="stat"><div class="stat-num">${Math.round(rep)}</div><div class="stat-label">Reputation</div></div>
                     </div>
                     <div class="profile-actions">
                         ${isMe
@@ -1457,6 +1840,7 @@ async function startHost() {
                             e.conn.send(JSON.stringify({ type:'chat', nick, text:msg.text, attachment:msg.attachment, time:msg.time }));
                         }
                     });
+                    if (document.hidden) notify(nick, (msg.text || '').slice(0, 60));
                 } else if (msg.type === 'typing') {
                     showTypingIndicator(nick);
                     hostConnections.forEach(e => {
@@ -1502,7 +1886,10 @@ async function startJoin() {
         guestConn.on('data', data => {
             try {
                 const msg = typeof data === 'string' ? JSON.parse(data) : data;
-                if (msg.type === 'chat') appendChatMsg(msg.nick, msg.text, 'other', msg.attachment, msg.time);
+                if (msg.type === 'chat') {
+                    appendChatMsg(msg.nick, msg.text, 'other', msg.attachment, msg.time);
+                    if (document.hidden) notify(msg.nick, (msg.text || '').slice(0, 60));
+                }
                 else if (msg.type === 'system') appendChatMsg('System', msg.text, 'system');
                 else if (msg.type === 'typing') showTypingIndicator(msg.nick);
             } catch {}
@@ -1576,7 +1963,7 @@ function quickJoinRoom(room) {
 const TYPING_SEND_THROTTLE = 1200;
 const TYPING_CLEAR_MS = 2500;
 let lastTypingSentAt = 0;
-const typingUsers = {};   // nick -> timeoutId
+const typingUsers = {};
 
 function clearTypingState() {
     Object.values(typingUsers).forEach(t => clearTimeout(t));
@@ -1630,14 +2017,16 @@ function onChatInputTyping() {
 
 function sendChat() {
     const input = document.getElementById('chatInput');
-    const text = input.value.trim();
+    let text = input.value.trim();
     const att = pendingAttachment && pendingAttachment.context === 'chat' ? pendingAttachment : null;
     if (!text && !att) return;
+    text = censorText(text);
     input.value = '';
     if (att) clearAttachment('chat');
 
     const time = Date.now();
     appendChatMsg(currentUser.nick + ' (You)', text, 'self', att, time);
+    trackEvent('messages');
 
     if (myRole === 'host') {
         hostConnections.forEach(e => {
@@ -1704,6 +2093,119 @@ function leaveRoom() {
 }
 
 /* ============================================================
+   Analytics graphs (simple canvas, updates daily)
+   ============================================================ */
+function renderAnalytics() {
+    const el = document.getElementById('analyticsContent');
+    if (!el) return;
+    const a = getAnalytics();
+    const db = getDB();
+    const days = Object.keys(a.daily).sort().slice(-14);
+    const postsData = days.map(d => a.daily[d].posts || 0);
+    const likesData = days.map(d => a.daily[d].likes || 0);
+    const reportsData = days.map(d => a.daily[d].reports || 0);
+
+    document.getElementById('analyticsUpdated').textContent = a.lastDay ? 'Last activity: ' + a.lastDay : 'No data yet';
+
+    el.innerHTML = `
+        <div class="analytics-grid">
+            <div class="analytics-card">
+                <h4>Total Posts</h4>
+                <div class="big-num">${a.totals.posts}</div>
+            </div>
+            <div class="analytics-card">
+                <h4>Total Likes</h4>
+                <div class="big-num">${a.totals.likes}</div>
+            </div>
+            <div class="analytics-card">
+                <h4>Total Reports</h4>
+                <div class="big-num">${a.totals.reports}</div>
+            </div>
+            <div class="analytics-card">
+                <h4>Messages Sent</h4>
+                <div class="big-num">${a.totals.messages}</div>
+            </div>
+        </div>
+        <div class="settings-section">
+            <div class="settings-header">Daily Activity (last 14 days)</div>
+            <div style="padding:16px;">
+                <div class="chart-box"><canvas id="chartPosts"></canvas></div>
+                <p class="text-muted" style="margin-top:8px;font-size:0.78rem;">Posts created per day</p>
+            </div>
+            <div style="padding:0 16px 16px;">
+                <div class="chart-box"><canvas id="chartEngagement"></canvas></div>
+                <p class="text-muted" style="margin-top:8px;font-size:0.78rem;">Likes (green) vs Reports (red)</p>
+            </div>
+        </div>
+        <div class="settings-section">
+            <div class="settings-header">Network Notes</div>
+            <div class="setting-row">
+                <div class="setting-info">
+                    <h4>Reputation</h4>
+                    <p>Your current reputation: <strong>${Math.round(getUserRep(currentUser.id))}</strong> / 100. Reports lower it; likes and replies raise it.</p>
+                </div>
+            </div>
+            <div class="setting-row">
+                <div class="setting-info">
+                    <h4>Auto-moderation</h4>
+                    <p>Any post reported by ≥ 25% of its viewers is automatically removed from the shared feed.</p>
+                </div>
+            </div>
+        </div>`;
+
+    // draw simple charts
+    setTimeout(() => {
+        drawBarChart('chartPosts', days, postsData, '#ff7b00');
+        drawDualLine('chartEngagement', days, likesData, reportsData);
+    }, 50);
+}
+
+function drawBarChart(canvasId, labels, data, color) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.parentElement.clientWidth - 24;
+    const h = 140;
+    canvas.width = w; canvas.height = h;
+    ctx.clearRect(0, 0, w, h);
+    if (!data.length) return;
+    const max = Math.max(...data, 1);
+    const barW = Math.max(6, (w - 20) / data.length - 4);
+    data.forEach((v, i) => {
+        const x = 10 + i * (barW + 4);
+        const barH = (v / max) * (h - 24);
+        ctx.fillStyle = color;
+        ctx.fillRect(x, h - 12 - barH, barW, barH);
+    });
+}
+function drawDualLine(canvasId, labels, likes, reports) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.parentElement.clientWidth - 24;
+    const h = 140;
+    canvas.width = w; canvas.height = h;
+    ctx.clearRect(0, 0, w, h);
+    if (!likes.length) return;
+    const max = Math.max(...likes, ...reports, 1);
+    const step = (w - 20) / Math.max(1, likes.length - 1);
+
+    function line(arr, col) {
+        ctx.beginPath();
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 2;
+        arr.forEach((v, i) => {
+            const x = 10 + i * step;
+            const y = h - 12 - (v / max) * (h - 24);
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+    }
+    line(likes, '#52d869');
+    line(reports, '#ff4d4d');
+}
+
+/* ============================================================
    Settings
    ============================================================ */
 function renderSettings() {
@@ -1733,12 +2235,34 @@ function renderSettings() {
                 </select>
             </div>
             <div class="setting-row">
-                <div class="setting-info"><h4>In-App Sounds</h4><p>Play sound on new messages</p></div>
+                <div class="setting-info"><h4>In-App Sounds</h4><p>Play sound on new messages and posts</p></div>
                 <label class="toggle"><input type="checkbox" ${s.sound ? 'checked' : ''} onchange="updateSetting('sound',this.checked)"><span class="toggle-slider"></span></label>
             </div>
             <div class="setting-row">
-                <div class="setting-info"><h4>Desktop Notifications</h4><p>Browser popups for new messages</p></div>
+                <div class="setting-info"><h4>Desktop Notifications</h4><p>Browser popups for new activity</p></div>
                 <label class="toggle"><input type="checkbox" ${s.notifications ? 'checked' : ''} onchange="updateSetting('notifications',this.checked)"><span class="toggle-slider"></span></label>
+            </div>
+        </div>
+        <div class="settings-section">
+            <div class="settings-header">Content</div>
+            <div class="setting-row">
+                <div class="setting-info"><h4>Filter Strong Language</h4><p>Automatically censor common swear words</p></div>
+                <label class="toggle"><input type="checkbox" ${s.filterLanguage !== false ? 'checked' : ''} onchange="updateSetting('filterLanguage',this.checked)"><span class="toggle-slider"></span></label>
+            </div>
+            <div class="setting-row">
+                <div class="setting-info"><h4>Report Threshold</h4><p>Posts reported by ≥ 25% of viewers are auto-removed</p></div>
+                <span class="text-muted">25%</span>
+            </div>
+        </div>
+        <div class="settings-section">
+            <div class="settings-header">Analytics</div>
+            <div class="setting-row">
+                <div class="setting-info"><h4>Share Anonymous Usage Data</h4><p>Contribute to network-wide daily graphs</p></div>
+                <label class="toggle"><input type="checkbox" ${s.shareAnalytics ? 'checked' : ''} onchange="updateSetting('shareAnalytics',this.checked)"><span class="toggle-slider"></span></label>
+            </div>
+            <div class="setting-row">
+                <div class="setting-info"><h4>Clear Local Analytics</h4><p>Wipe your daily counters</p></div>
+                <button class="btn btn-danger btn-small" onclick="clearAnalytics()">Clear</button>
             </div>
         </div>
         <div class="settings-section">
@@ -1748,7 +2272,7 @@ function renderSettings() {
                 <button class="btn btn-danger btn-small" onclick="clearFeedCache()">Clear</button>
             </div>
             <div class="setting-row">
-                <div class="setting-info"><h4>Reset Algorithm</h4><p>Wipe your interest profile and liked history</p></div>
+                <div class="setting-info"><h4>Reset Algorithm</h4><p>Wipe interest profile and like/dislike history</p></div>
                 <button class="btn btn-danger btn-small" onclick="resetAlgorithm()">Reset</button>
             </div>
             <div class="setting-row">
@@ -1792,7 +2316,9 @@ function updateSetting(key, val) {
     if (!db.settings) db.settings = {};
     db.settings[key] = val;
     saveDB(db);
-    if (key === 'notifications' && val && Notification.permission !== 'granted') Notification.requestPermission();
+    if (key === 'notifications' && val) {
+        if (Notification.permission !== 'granted') Notification.requestPermission();
+    }
     if (key === 'sound' && val) playSound();
     renderSettings();
 }
@@ -1817,11 +2343,17 @@ function resetAlgorithm() {
     renderFeed();
     showToast('Algorithm reset', 'success');
 }
+function clearAnalytics() {
+    localStorage.removeItem(ANALYTICS_KEY);
+    showToast('Analytics cleared', 'success');
+    renderAnalytics();
+}
 function wipeAll() {
-    showModal('Wipe All Data', '<p>This permanently deletes your account, posts, and settings. Continue?</p>', [
+    showModal('Wipe All Data', '<p>This permanently deletes your account, posts, settings and analytics. Continue?</p>', [
         { label:'Cancel', class:'btn-secondary' },
         { label:'Wipe Everything', class:'btn-danger', onClick: () => {
             localStorage.removeItem(DB_KEY);
+            localStorage.removeItem(ANALYTICS_KEY);
             location.reload();
         }}
     ]);
@@ -1833,7 +2365,13 @@ function wipeAll() {
 window.addEventListener('DOMContentLoaded', () => {
     const db = getDB();
     applyTheme();
-    if (db.session && db.users[db.session]) initApp(db.users[db.session]);
+    if (db.session && db.users[db.session]) {
+        initApp(db.users[db.session]);
+    } else if (db.session && String(db.session).startsWith('guest_')) {
+        // guest session from previous run – treat as new guest
+        db.session = null;
+        saveDB(db);
+    }
 
     document.getElementById('loginPassword')?.addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
     document.getElementById('regPassword')?.addEventListener('keydown', e => { if (e.key === 'Enter') register(); });
