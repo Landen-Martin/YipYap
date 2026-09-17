@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="description" content="YipYap — a decentralized, peer-to-peer social network with encrypted rooms, a ranked feed, and private on-device analytics.">
+<meta name="description" content="YipYap — a decentralized, peer-to-peer social network with encrypted rooms, an always-on ranked feed, and private on-device analytics.">
 <meta name="theme-color" content="#16161a">
 <meta name="color-scheme" content="dark light">
 <title>YipYap | P2P Social</title>
@@ -597,91 +597,105 @@ input:focus,textarea:focus,select:focus { border-color:var(--accent); background
 /* ============================================================================
    YipYap — Peer-to-Peer Social Network
    ---------------------------------------------------------------------------
-   Deployment-ready build. Storage layer is guarded, sessions are stored
-   separately from the account database, attachments live in IndexedDB, and
-   the ranked feed uses per-interaction timestamps for accurate analytics.
+   Features:
+     • Fixed storage key `yipyap_db` with in-data schemaVersion.
+     • Timestamped backups (yipyap_db_backup_<ISO>) with an index key.
+     • Quota recovery: on write failure, oldest backups are pruned first.
+     • Always-on online-learning ranking model. Every render rescores every
+       post. Every interaction updates the user weights immediately.
+     • Addictiveness mechanisms: variable reward noise, near-miss boost,
+       freshness spikes, streaks, curiosity gaps, social-proof velocity,
+       loss-aversion refresh handling, and position-bias correction.
    ============================================================================ */
 'use strict';
 
 /* ============================================================================
    1. CONSTANTS
    ============================================================================ */
-const DB_KEY            = 'yipyap_db_v9';
-const LEGACY_DB_KEYS    = ['yipyap_db_v8'];
+const DB_KEY            = 'yipyap_db';
+const BACKUP_PREFIX     = 'yipyap_db_backup_';
+const BACKUP_INDEX_KEY  = 'yipyap_db_backup_index';
+const CORRUPT_PREFIX    = 'yipyap_db_corrupt_';
+const LEGACY_DB_KEYS    = ['yipyap_db_v8', 'yipyap_db_v9'];
 const SESSION_KEY       = 'yipyap_session_v1';
 const ANALYTICS_KEY     = 'yipyap_analytics_v1';
-const DIR_ID            = 'yipyap-dir-v9';
+const DIR_ID            = 'yipyap-dir-v10';
 
-const FEED_ALGO_THRESHOLD = 25;
-const REPORT_THRESHOLD    = 0.25;
-const REPORT_MIN_COUNT    = 2;
-const MAX_FILE_SIZE       = 2 * 1024 * 1024;
-const MAX_POSTS           = 300;
-const MAX_VIEWED_BY       = 80;
-const PBKDF2_ITERATIONS   = 100000;
-const PBKDF2_FALLBACK_IT  = 4000;
-const ANALYTICS_WINDOW    = 14;
-const ANALYTICS_REFRESH   = 2000;
+const SCHEMA_VERSION       = 10;
+const MAX_BACKUPS          = 5;
+const FEED_ALGO_THRESHOLD  = 25;
+const REPORT_THRESHOLD     = 0.25;
+const REPORT_MIN_COUNT     = 2;
+const MAX_FILE_SIZE        = 2 * 1024 * 1024;
+const MAX_POSTS            = 400;
+const MAX_VIEWED_BY        = 80;
+const PBKDF2_ITERATIONS    = 100000;
+const PBKDF2_FALLBACK_IT   = 4000;
+const ANALYTICS_WINDOW     = 14;
+const ANALYTICS_REFRESH    = 2000;
+
+const LEARNING_RATE_BASE   = 0.05;
+const LEARNING_RATE_DECAY  = 0.00008;
+const WEIGHT_DECAY         = 0.0005;
+const WEIGHT_CLIP          = 5;
+const BIAS_CLIP            = 2;
+const VARIANCE_ALPHA       = 0.1;
+const SESSION_LR           = 0.15;
+const SESSION_DECAY        = 0.7;
+const MOOD_HALFLIFE_MIN    = 10;
 
 const LEGAL_EFFECTIVE_DATE = 'September 17, 2026';
 
 /* ============================================================================
-   2. GUARDED STORAGE LAYER
+   2. GUARDED STORAGE
    ============================================================================ */
 const Storage = (function () {
     let available = false;
     const memory = {};
-
     try {
         const probe = '__yipyap_probe__';
         window.localStorage.setItem(probe, '1');
         window.localStorage.removeItem(probe);
         available = true;
-    } catch (_) {
-        available = false;
-    }
+    } catch (_) { available = false; }
 
     return {
         isPersistent() { return available; },
-
         get(key) {
-            if (available) {
-                try { return window.localStorage.getItem(key); } catch (_) {}
-            }
+            if (available) { try { return window.localStorage.getItem(key); } catch (_) {} }
             return Object.prototype.hasOwnProperty.call(memory, key) ? memory[key] : null;
         },
-
-        /** @returns {'ok'|'quota'|'memory'} */
         set(key, value) {
             memory[key] = value;
             if (!available) return 'memory';
-            try {
-                window.localStorage.setItem(key, value);
-                return 'ok';
-            } catch (_) {
-                return 'quota';
-            }
+            try { window.localStorage.setItem(key, value); return 'ok'; }
+            catch (_) { return 'quota'; }
         },
-
         remove(key) {
             delete memory[key];
             if (available) { try { window.localStorage.removeItem(key); } catch (_) {} }
+        },
+        keys() {
+            if (available) {
+                try {
+                    const out = [];
+                    for (let i = 0; i < window.localStorage.length; i++) out.push(window.localStorage.key(i));
+                    return out;
+                } catch (_) {}
+            }
+            return Object.keys(memory);
         }
     };
 })();
 
 function safeParse(raw, fallback) {
     if (raw == null || raw === '') return fallback;
-    try {
-        const parsed = JSON.parse(raw);
-        return parsed == null ? fallback : parsed;
-    } catch (_) {
-        return fallback;
-    }
+    try { const p = JSON.parse(raw); return p == null ? fallback : p; }
+    catch (_) { return fallback; }
 }
 
 /* ============================================================================
-   3. CRYPTO — PBKDF2-SHA256 with dependency-free fallback
+   3. CRYPTO
    ============================================================================ */
 const PureSHA256 = (function () {
     const K = [
@@ -694,28 +708,21 @@ const PureSHA256 = (function () {
         0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
         0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
     ];
-
     function rotr(x, n) { return (x >>> n) | (x << (32 - n)); }
-
     function utf8Bytes(str) {
         const out = [];
         for (let i = 0; i < str.length; i++) {
             let c = str.charCodeAt(i);
-            if (c < 0x80) {
-                out.push(c);
-            } else if (c < 0x800) {
-                out.push(0xc0 | (c >> 6), 0x80 | (c & 63));
-            } else if (c >= 0xd800 && c < 0xdc00 && i + 1 < str.length) {
+            if (c < 0x80) out.push(c);
+            else if (c < 0x800) out.push(0xc0 | (c >> 6), 0x80 | (c & 63));
+            else if (c >= 0xd800 && c < 0xdc00 && i + 1 < str.length) {
                 const c2 = str.charCodeAt(++i);
                 c = 0x10000 + ((c - 0xd800) << 10) + (c2 - 0xdc00);
                 out.push(0xf0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
-            } else {
-                out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
-            }
+            } else out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
         }
         return out;
     }
-
     function digest(bytes) {
         const H = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
         const len = bytes.length;
@@ -726,7 +733,6 @@ const PureSHA256 = (function () {
         const bitsLo = (len * 8) >>> 0;
         buf.push((bitsHi >>> 24) & 255, (bitsHi >>> 16) & 255, (bitsHi >>> 8) & 255, bitsHi & 255);
         buf.push((bitsLo >>> 24) & 255, (bitsLo >>> 16) & 255, (bitsLo >>> 8) & 255, bitsLo & 255);
-
         const w = new Array(64);
         for (let i = 0; i < buf.length; i += 64) {
             for (let j = 0; j < 16; j++) {
@@ -740,12 +746,12 @@ const PureSHA256 = (function () {
             }
             let a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
             for (let j = 0; j < 64; j++) {
-                const S1  = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
-                const ch  = (e & f) ^ (~e & g);
-                const t1  = (h + S1 + ch + K[j] + w[j]) | 0;
-                const S0  = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+                const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+                const ch = (e & f) ^ (~e & g);
+                const t1 = (h + S1 + ch + K[j] + w[j]) | 0;
+                const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
                 const maj = (a & b) ^ (a & c) ^ (b & c);
-                const t2  = (S0 + maj) | 0;
+                const t2 = (S0 + maj) | 0;
                 h = g; g = f; f = e; e = (d + t1) | 0;
                 d = c; c = b; b = a; a = (t1 + t2) | 0;
             }
@@ -756,7 +762,6 @@ const PureSHA256 = (function () {
         H.forEach(x => out.push((x >>> 24) & 255, (x >>> 16) & 255, (x >>> 8) & 255, x & 255));
         return out;
     }
-
     return {
         bytes(str) { return digest(utf8Bytes(str)); },
         hex(str) { return digest(utf8Bytes(str)).map(b => b.toString(16).padStart(2, '0')).join(''); }
@@ -764,11 +769,9 @@ const PureSHA256 = (function () {
 })();
 
 function hasWebCrypto() {
-    return typeof window !== 'undefined' &&
-           window.crypto && window.crypto.subtle &&
+    return typeof window !== 'undefined' && window.crypto && window.crypto.subtle &&
            typeof window.crypto.subtle.importKey === 'function';
 }
-
 function bytesToHex(bytes) {
     let out = '';
     for (let i = 0; i < bytes.length; i++) out += bytes[i].toString(16).padStart(2, '0');
@@ -786,24 +789,19 @@ function bytesToBase64(bytes) {
 }
 function randomHex(byteCount) {
     const bytes = new Uint8Array(byteCount);
-    if (window.crypto && window.crypto.getRandomValues) {
-        window.crypto.getRandomValues(bytes);
-    } else {
-        for (let i = 0; i < byteCount; i++) bytes[i] = Math.floor(Math.random() * 256);
-    }
+    if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(bytes);
+    else for (let i = 0; i < byteCount; i++) bytes[i] = Math.floor(Math.random() * 256);
     return bytesToHex(bytes);
 }
 
 async function deriveHash(password, saltHex, iterations) {
     if (hasWebCrypto()) {
         const enc = new TextEncoder();
-        const keyMaterial = await window.crypto.subtle.importKey(
-            'raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']
-        );
+        const km = await window.crypto.subtle.importKey(
+            'raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
         const bits = await window.crypto.subtle.deriveBits(
             { name: 'PBKDF2', salt: hexToBytes(saltHex), iterations, hash: 'SHA-256' },
-            keyMaterial, 256
-        );
+            km, 256);
         return bytesToHex(new Uint8Array(bits));
     }
     let acc = saltHex + '|' + password;
@@ -811,7 +809,6 @@ async function deriveHash(password, saltHex, iterations) {
     for (let i = 0; i < rounds; i++) acc = PureSHA256.hex(acc + '|' + i + '|' + saltHex);
     return acc;
 }
-
 async function createPasswordRecord(password) {
     const salt = randomHex(16);
     const hash = await deriveHash(password, salt, PBKDF2_ITERATIONS);
@@ -822,7 +819,6 @@ async function createPasswordRecord(password) {
         passHash: hash
     };
 }
-
 async function verifyPassword(password, user) {
     if (user.passAlgo === 'pbkdf2-sha256' && user.passSalt && user.passHash) {
         const candidate = await deriveHash(password, user.passSalt, user.passIterations || PBKDF2_ITERATIONS);
@@ -833,14 +829,11 @@ async function verifyPassword(password, user) {
         if (hasWebCrypto()) {
             const buf = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(password));
             legacy = bytesToBase64(new Uint8Array(buf));
-        } else {
-            legacy = bytesToBase64(PureSHA256.bytes(password));
-        }
+        } else legacy = bytesToBase64(PureSHA256.bytes(password));
         return timingSafeEqual(legacy, user.passHash);
     }
     return false;
 }
-
 function timingSafeEqual(a, b) {
     if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
     let diff = 0;
@@ -851,36 +844,22 @@ function timingSafeEqual(a, b) {
 /* ============================================================================
    4. SMALL UTILITIES
    ============================================================================ */
-function uid(prefix) {
-    return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
-}
-
+function uid(prefix) { return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
 function escapeHtml(value) {
     if (value == null) return '';
-    return String(value)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
+    return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
-
 function dayKey(ts) {
     const d = new Date(ts);
-    return d.getFullYear() + '-' +
-           String(d.getMonth() + 1).padStart(2, '0') + '-' +
-           String(d.getDate()).padStart(2, '0');
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
-
 function lastNDays(n) {
     const out = [];
     const now = new Date();
-    for (let i = n - 1; i >= 0; i--) {
-        out.push(dayKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - i).getTime()));
-    }
+    for (let i = n - 1; i >= 0; i--) out.push(dayKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - i).getTime()));
     return out;
 }
-
 function formatNumber(n) {
     if (!isFinite(n)) return '0';
     const v = Math.round(n * 10) / 10;
@@ -888,49 +867,42 @@ function formatNumber(n) {
     if (Math.abs(v) >= 10000) return (v / 1000).toFixed(1) + 'K';
     return String(v % 1 === 0 ? v : v.toFixed(1));
 }
-
 function isSafeDataUrl(url) {
     return typeof url === 'string' && /^data:(image|video|audio|application|text)\//i.test(url);
 }
+function gaussianRandom() {
+    let u = 0, v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
 async function copyText(text) {
     try {
-        if (navigator.clipboard && window.isSecureContext) {
-            await navigator.clipboard.writeText(text);
-        } else {
+        if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(text);
+        else {
             const ta = document.createElement('textarea');
-            ta.value = text;
-            ta.setAttribute('readonly', '');
-            ta.style.position = 'fixed';
-            ta.style.opacity = '0';
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            ta.remove();
+            ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
+            document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove();
         }
         showToast('Copied!', 'success');
-    } catch (_) {
-        showToast('Copy failed — please select the text manually.', 'error');
-    }
+    } catch (_) { showToast('Copy failed — please select the text manually.', 'error'); }
 }
-
 function viewImage(src) {
     if (!isSafeDataUrl(src) && !/^blob:/.test(src)) return;
     const viewer = document.createElement('div');
     viewer.className = 'image-viewer';
     const img = document.createElement('img');
-    img.src = src;
-    img.alt = '';
+    img.src = src; img.alt = '';
     viewer.appendChild(img);
     viewer.onclick = () => viewer.remove();
     document.body.appendChild(viewer);
 }
-
 function toggleAuthView() {
     document.getElementById('loginForm').classList.toggle('hidden');
     document.getElementById('registerForm').classList.toggle('hidden');
 }
-
 const authErrorTimers = {};
 function showAuthError(elementId, message) {
     const el = document.getElementById(elementId);
@@ -942,9 +914,10 @@ function showAuthError(elementId, message) {
 }
 
 /* ============================================================================
-   5. DATABASE
+   5. DATABASE — fixed key, in-data schemaVersion, timestamped backups
    ============================================================================ */
 let DB = null;
+let persistTimer = null;
 
 function defaultSettings() {
     return {
@@ -957,9 +930,32 @@ function defaultSettings() {
     };
 }
 
+function defaultModel() {
+    return {
+        weights: {},
+        bias: 0,
+        sessionWeights: {},
+        moodVector: {},
+        topicWeights: {},
+        authorAffinity: {},
+        variance: {},
+        recentTopics: [],
+        interactionCount: 0,
+        lastUpdate: 0,
+        engagementThreshold: 0.5,
+        engagementCount: 0,
+        lastSessionDate: null,
+        streakDays: 0,
+        lastTopScore: null,
+        sessionStartAt: 0
+    };
+}
+
 function defaultDB() {
     return {
-        version: 9,
+        schemaVersion: SCHEMA_VERSION,
+        updatedAt: Date.now(),
+        appVersion: '1.0.0',
         users: {},
         following: [],
         followers: [],
@@ -970,10 +966,67 @@ function defaultDB() {
         viewedPosts: [],
         reportsMade: {},
         reputation: {},
-        settings: defaultSettings()
+        settings: defaultSettings(),
+        model: defaultModel()
     };
 }
 
+/* -------- Backup management ---------------------------------------------- */
+function getBackupIndex() {
+    const raw = Storage.get(BACKUP_INDEX_KEY);
+    const parsed = safeParse(raw, null);
+    return Array.isArray(parsed) ? parsed : [];
+}
+function saveBackupIndex(list) {
+    Storage.set(BACKUP_INDEX_KEY, JSON.stringify(list));
+}
+function createBackup(reason) {
+    const raw = Storage.get(DB_KEY);
+    if (!raw) return null;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const key = BACKUP_PREFIX + stamp;
+    Storage.set(key, raw);
+
+    const index = getBackupIndex();
+    index.push({ key, stamp, reason: reason || 'auto', size: raw.length, time: Date.now() });
+    while (index.length > MAX_BACKUPS) {
+        const oldest = index.shift();
+        Storage.remove(oldest.key);
+    }
+    saveBackupIndex(index);
+    return key;
+}
+
+/**
+ * Delete the oldest backups until the given payload can be written.
+ * Never deletes the active database key. Never touches the newest backup.
+ * @returns {'ok'|'quota'|'memory'}
+ */
+function saveWithQuotaRecovery(payload) {
+    let status = Storage.set(DB_KEY, payload);
+    if (status !== 'quota') return status;
+
+    const index = getBackupIndex();
+    // Keep at least one backup for recovery.
+    while (index.length > 1 && status === 'quota') {
+        const oldest = index.shift();
+        Storage.remove(oldest.key);
+        saveBackupIndex(index);
+        status = Storage.set(DB_KEY, payload);
+    }
+    if (status === 'quota') {
+        // Try clearing the newest backup too, only if the write still fails.
+        while (index.length > 0 && status === 'quota') {
+            const oldest = index.shift();
+            Storage.remove(oldest.key);
+            saveBackupIndex(index);
+            status = Storage.set(DB_KEY, payload);
+        }
+    }
+    return status;
+}
+
+/* -------- Migration ------------------------------------------------------ */
 function migratePost(raw) {
     const post = Object.assign({}, raw);
     const toEntries = (list, fallbackTime) => (Array.isArray(list) ? list : [])
@@ -993,87 +1046,116 @@ function migratePost(raw) {
     return post;
 }
 
-function migrateLegacyDB() {
-    for (let i = 0; i < LEGACY_DB_KEYS.length; i++) {
-        const raw = Storage.get(LEGACY_DB_KEYS[i]);
-        if (!raw) continue;
-        const old = safeParse(raw, null);
-        if (!old || typeof old !== 'object') continue;
+function normalizeDB(parsed) {
+    const base = defaultDB();
+    const out = Object.assign(base, parsed);
+    out.schemaVersion = SCHEMA_VERSION;
+    out.settings = Object.assign(defaultSettings(), parsed.settings || {});
+    out.users = parsed.users || {};
+    out.posts = (Array.isArray(parsed.posts) ? parsed.posts : []).map(migratePost);
+    out.following = Array.isArray(parsed.following) ? parsed.following : [];
+    out.followers = Array.isArray(parsed.followers) ? parsed.followers : [];
+    out.likedPosts = Array.isArray(parsed.likedPosts) ? parsed.likedPosts : [];
+    out.dislikedPosts = Array.isArray(parsed.dislikedPosts) ? parsed.dislikedPosts : [];
+    out.viewedPosts = Array.isArray(parsed.viewedPosts) ? parsed.viewedPosts : [];
+    out.reportsMade = parsed.reportsMade || {};
+    out.reputation = parsed.reputation || {};
+    out.interestProfile = parsed.interestProfile || {};
+    out.model = Object.assign(defaultModel(), parsed.model || {});
+    return out;
+}
 
-        const fresh = defaultDB();
-        fresh.users           = old.users || {};
-        fresh.following       = Array.isArray(old.following) ? old.following : [];
-        fresh.followers       = Array.isArray(old.followers) ? old.followers : [];
-        fresh.interestProfile = old.interestProfile || {};
-        fresh.likedPosts      = Array.isArray(old.likedPosts) ? old.likedPosts : [];
-        fresh.dislikedPosts   = Array.isArray(old.dislikedPosts) ? old.dislikedPosts : [];
-        fresh.viewedPosts     = Array.isArray(old.viewedPosts) ? old.viewedPosts : [];
-        fresh.reportsMade     = old.reportsMade || {};
-        fresh.reputation      = old.reputation || {};
-        fresh.settings        = Object.assign(defaultSettings(), old.settings || {});
-        delete fresh.settings.filterLanguage_removed;
+function migrateLegacySources() {
+    let merged = null;
+    LEGACY_DB_KEYS.forEach(k => {
+        const raw = Storage.get(k);
+        if (!raw) return;
+        const parsed = safeParse(raw, null);
+        if (!parsed || typeof parsed !== 'object') return;
+        if (!merged) merged = defaultDB();
+        Object.assign(merged.users, parsed.users || {});
+        Object.assign(merged.reputation, parsed.reputation || {});
+        Object.assign(merged.interestProfile, parsed.interestProfile || {});
+        Object.assign(merged.reportsMade, parsed.reportsMade || {});
+        merged.following = merged.following.concat(parsed.following || []);
+        merged.followers = merged.followers.concat(parsed.followers || []);
+        merged.likedPosts = merged.likedPosts.concat(parsed.likedPosts || []);
+        merged.dislikedPosts = merged.dislikedPosts.concat(parsed.dislikedPosts || []);
+        merged.viewedPosts = merged.viewedPosts.concat(parsed.viewedPosts || []);
+        merged.settings = Object.assign(merged.settings, parsed.settings || {});
 
-        const seen = new Set();
-        const posts = [];
-        (Array.isArray(old.myPosts) ? old.myPosts : [])
-            .concat(Array.isArray(old.feedCache) ? old.feedCache : [])
-            .forEach(p => {
-                if (!p || !p.id || seen.has(p.id)) return;
-                seen.add(p.id);
-                posts.push(migratePost(p));
-            });
-        posts.sort((a, b) => b.time - a.time);
-        fresh.posts = posts.slice(0, MAX_POSTS);
-
-        Storage.set(DB_KEY, JSON.stringify(fresh));
-        Storage.remove(LEGACY_DB_KEYS[i]);
-        return fresh;
+        const seen = new Set(merged.posts.map(p => p.id));
+        const incoming = (Array.isArray(parsed.myPosts) ? parsed.myPosts : [])
+            .concat(Array.isArray(parsed.feedCache) ? parsed.feedCache : []);
+        incoming.forEach(p => {
+            if (!p || !p.id || seen.has(p.id)) return;
+            seen.add(p.id);
+            merged.posts.push(migratePost(p));
+        });
+    });
+    if (merged) {
+        merged.posts.sort((a, b) => b.time - a.time);
+        merged.posts = merged.posts.slice(0, MAX_POSTS);
     }
-    return null;
+    return merged;
 }
 
 function loadDB() {
     const raw = Storage.get(DB_KEY);
+
     if (raw) {
         const parsed = safeParse(raw, null);
         if (parsed && typeof parsed === 'object') {
-            const base = defaultDB();
-            DB = Object.assign(base, parsed);
-            DB.settings = Object.assign(defaultSettings(), parsed.settings || {});
-            DB.users = parsed.users || {};
-            DB.posts = (Array.isArray(parsed.posts) ? parsed.posts : []).map(migratePost);
-            DB.following = Array.isArray(parsed.following) ? parsed.following : [];
-            DB.followers = Array.isArray(parsed.followers) ? parsed.followers : [];
-            DB.likedPosts = Array.isArray(parsed.likedPosts) ? parsed.likedPosts : [];
-            DB.dislikedPosts = Array.isArray(parsed.dislikedPosts) ? parsed.dislikedPosts : [];
-            DB.viewedPosts = Array.isArray(parsed.viewedPosts) ? parsed.viewedPosts : [];
-            DB.reportsMade = parsed.reportsMade || {};
-            DB.reputation = parsed.reputation || {};
-            DB.interestProfile = parsed.interestProfile || {};
+            const version = parsed.schemaVersion || 8;
+
+            if (version < SCHEMA_VERSION) {
+                // Back up before migrating.
+                createBackup('pre-migration-v' + version);
+                const migrated = normalizeDB(parsed);
+                DB = migrated;
+                const status = saveWithQuotaRecovery(JSON.stringify(DB));
+                if (status !== 'ok' && status !== 'memory') {
+                    // Migration write failed; restore old payload.
+                    Storage.set(DB_KEY, raw);
+                    DB = normalizeDB(parsed);
+                    showToast('Update could not be saved due to full storage. Your data was preserved.', 'warning', 7000);
+                } else {
+                    showToast('App updated. Your posts and data were preserved.', 'success', 4000);
+                }
+                return DB;
+            }
+
+            DB = normalizeDB(parsed);
             return DB;
         }
-        Storage.set(DB_KEY + '_corrupt_backup', raw);
+
+        // Corrupt payload — keep a raw backup, try legacy sources, else start fresh.
+        Storage.set(CORRUPT_PREFIX + Date.now(), raw);
         showToast('Saved data was unreadable. A backup was kept and a fresh profile was created.', 'warning', 7000);
     }
 
-    const migrated = migrateLegacyDB();
+    const migrated = migrateLegacySources();
     DB = migrated || defaultDB();
-    persist();
+    saveWithQuotaRecovery(JSON.stringify(DB));
     return DB;
 }
 
 function persist() {
     if (!DB) return 'memory';
     if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }
+    DB.updatedAt = Date.now();
+    DB.schemaVersion = SCHEMA_VERSION;
     try {
-        return Storage.set(DB_KEY, JSON.stringify(DB));
+        const status = saveWithQuotaRecovery(JSON.stringify(DB));
+        if (status === 'quota') {
+            showToast('Storage is full. Please clear old backups or export your data.', 'error', 6000);
+        }
+        return status;
     } catch (err) {
         console.error('[persist]', err);
         return 'quota';
     }
 }
-
-let persistTimer = null;
 function schedulePersist(delay) {
     if (persistTimer) clearTimeout(persistTimer);
     persistTimer = setTimeout(() => { persistTimer = null; persist(); }, delay == null ? 800 : delay);
@@ -1082,14 +1164,12 @@ function schedulePersist(delay) {
 /* ============================================================================
    6. SESSION
    ============================================================================ */
-function saveSession(userId) {
-    return Storage.set(SESSION_KEY, JSON.stringify({ userId, createdAt: Date.now(), v: 1 }));
-}
+function saveSession(userId) { return Storage.set(SESSION_KEY, JSON.stringify({ userId, createdAt: Date.now(), v: 1 })); }
 function readSession() { return safeParse(Storage.get(SESSION_KEY), null); }
 function clearSession() { Storage.remove(SESSION_KEY); }
 
 /* ============================================================================
-   7. ATTACHMENTS
+   7. ATTACHMENTS (IndexedDB)
    ============================================================================ */
 const attachmentMemCache = new Map();
 
@@ -1097,7 +1177,6 @@ const AttachmentStore = (function () {
     const DB_NAME = 'yipyap_attachments';
     const STORE   = 'files';
     const VERSION = 1;
-
     let handle = null;
     let supported = false;
     let opening = null;
@@ -1108,10 +1187,8 @@ const AttachmentStore = (function () {
             if (typeof indexedDB === 'undefined') { resolve(false); return; }
             let req;
             try { req = indexedDB.open(DB_NAME, VERSION); } catch (_) { resolve(false); return; }
-
             let settled = false;
             const finish = ok => { if (!settled) { settled = true; resolve(ok); } };
-
             req.onupgradeneeded = () => {
                 const d = req.result;
                 if (!d.objectStoreNames.contains(STORE)) d.createObjectStore(STORE, { keyPath: 'id' });
@@ -1123,13 +1200,11 @@ const AttachmentStore = (function () {
         });
         return opening;
     }
-
     function tx(mode) { return handle.transaction(STORE, mode).objectStore(STORE); }
 
     return {
         async init() { return openOnce(); },
         isSupported() { return supported; },
-
         put(record) {
             if (!supported || !handle) return Promise.resolve(false);
             return new Promise(resolve => {
@@ -1140,7 +1215,6 @@ const AttachmentStore = (function () {
                 } catch (_) { resolve(false); }
             });
         },
-
         getAll() {
             if (!supported || !handle) return Promise.resolve([]);
             return new Promise(resolve => {
@@ -1151,7 +1225,6 @@ const AttachmentStore = (function () {
                 } catch (_) { resolve([]); }
             });
         },
-
         remove(id) {
             if (!supported || !handle) return Promise.resolve(false);
             return new Promise(resolve => {
@@ -1162,7 +1235,6 @@ const AttachmentStore = (function () {
                 } catch (_) { resolve(false); }
             });
         },
-
         clear() {
             if (!supported || !handle) return Promise.resolve(false);
             return new Promise(resolve => {
@@ -1180,57 +1252,43 @@ async function initAttachments() {
     const ok = await AttachmentStore.init();
     if (!ok) return;
     const records = await AttachmentStore.getAll();
-    records.forEach(r => {
-        if (r && r.id && r.dataUrl) attachmentMemCache.set(r.id, r.dataUrl);
-    });
+    records.forEach(r => { if (r && r.id && r.dataUrl) attachmentMemCache.set(r.id, r.dataUrl); });
 }
-
 function storeAttachment(att) {
     if (!att) return null;
     if (!att.dataUrl) return att;
     if (!isSafeDataUrl(att.dataUrl)) return null;
-
     const id = att.id || uid('att');
     attachmentMemCache.set(id, att.dataUrl);
-
     if (AttachmentStore.isSupported()) {
         AttachmentStore.put({
-            id,
-            name: att.name || 'file',
+            id, name: att.name || 'file',
             type: att.type || 'application/octet-stream',
-            size: att.size || 0,
-            dataUrl: att.dataUrl
+            size: att.size || 0, dataUrl: att.dataUrl
         });
         return { id, name: att.name, type: att.type, size: att.size };
     }
     return { id, name: att.name, type: att.type, size: att.size, dataUrl: att.dataUrl };
 }
-
 function expandAttachment(att) {
     if (!att) return null;
     if (att.dataUrl) return att;
     const dataUrl = attachmentMemCache.get(att.id);
     return dataUrl ? Object.assign({}, att, { dataUrl }) : att;
 }
-
 function pruneOrphanAttachments() {
     if (!AttachmentStore.isSupported()) return;
     const live = new Set();
     DB.posts.forEach(p => { if (p.attachment && p.attachment.id) live.add(p.attachment.id); });
     attachmentMemCache.forEach((_v, id) => {
-        if (!live.has(id)) {
-            attachmentMemCache.delete(id);
-            AttachmentStore.remove(id);
-        }
+        if (!live.has(id)) { attachmentMemCache.delete(id); AttachmentStore.remove(id); }
     });
 }
 
 /* ============================================================================
-   8. ANALYTICS COUNTERS
+   8. LOCAL ANALYTICS COUNTERS
    ============================================================================ */
-function defaultAnalytics() {
-    return { daily: {}, totals: { posts: 0, likes: 0, reports: 0, messages: 0, sessions: 0 }, lastDay: null };
-}
+function defaultAnalytics() { return { daily: {}, totals: { posts: 0, likes: 0, reports: 0, messages: 0, sessions: 0 }, lastDay: null }; }
 function getAnalytics() {
     const raw = safeParse(Storage.get(ANALYTICS_KEY), null);
     if (!raw || typeof raw !== 'object') return defaultAnalytics();
@@ -1242,7 +1300,6 @@ function getAnalytics() {
     };
 }
 function saveAnalytics(a) { Storage.set(ANALYTICS_KEY, JSON.stringify(a)); }
-
 function trackEvent(type, amount) {
     if (!DB || DB.settings.shareAnalytics === false) return;
     const inc = amount == null ? 1 : amount;
@@ -1254,7 +1311,6 @@ function trackEvent(type, amount) {
     if (a.totals[type] === undefined) a.totals[type] = 0;
     a.totals[type] += inc;
     a.lastDay = day;
-
     const keys = Object.keys(a.daily).sort();
     while (keys.length > 30) delete a.daily[keys.shift()];
     saveAnalytics(a);
@@ -1298,7 +1354,6 @@ function showToast(message, type, duration) {
         setTimeout(() => toast.remove(), 280);
     }, life);
 }
-
 let sharedAudioContext = null;
 function playSound() {
     try {
@@ -1308,18 +1363,14 @@ function playSound() {
         if (sharedAudioContext.state === 'suspended') sharedAudioContext.resume();
         const osc = sharedAudioContext.createOscillator();
         const gain = sharedAudioContext.createGain();
-        osc.connect(gain);
-        gain.connect(sharedAudioContext.destination);
-        osc.type = 'sine';
-        osc.frequency.value = 880;
+        osc.connect(gain); gain.connect(sharedAudioContext.destination);
+        osc.type = 'sine'; osc.frequency.value = 880;
         const now = sharedAudioContext.currentTime;
         gain.gain.setValueAtTime(0.08, now);
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
-        osc.start(now);
-        osc.stop(now + 0.3);
+        osc.start(now); osc.stop(now + 0.3);
     } catch (_) {}
 }
-
 function notify(title, body) {
     if (!DB || !DB.settings.notifications) return;
     if (!('Notification' in window)) return;
@@ -1327,23 +1378,18 @@ function notify(title, body) {
     try { new Notification(title, { body: body || '', silent: !DB.settings.sound }); } catch (_) {}
     if (DB.settings.sound) playSound();
 }
-
 function showModal(title, contentHtml, actions, isLegal) {
     const container = document.getElementById('modalContainer');
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
-
     const buttons = (actions || []).map((a, i) =>
         '<button class="btn ' + (a.class || 'btn-secondary') + '" data-modal-act="' + i + '">' +
-        escapeHtml(a.label) + '</button>'
-    ).join('');
-
+        escapeHtml(a.label) + '</button>').join('');
     overlay.innerHTML =
         '<div class="modal' + (isLegal ? ' legal' : '') + '">' +
         '<h3>' + escapeHtml(title) + '</h3>' + contentHtml +
         '<div class="modal-actions">' + buttons + '</div></div>';
-
     (actions || []).forEach((a, i) => {
         const btn = overlay.querySelector('[data-modal-act="' + i + '"]');
         if (!btn) return;
@@ -1352,7 +1398,6 @@ function showModal(title, contentHtml, actions, isLegal) {
             if (a.close !== false) overlay.remove();
         };
     });
-
     container.appendChild(overlay);
     return overlay;
 }
@@ -1438,6 +1483,7 @@ function showPrivacy() {
             <p>• <strong>Attachments:</strong> Images, videos, and files that you attach to posts or messages.</p>
             <p>• <strong>Preferences:</strong> Your settings, such as theme, notification preferences, and chat alignment.</p>
             <p>• <strong>Analytics Counters:</strong> Local counters for posts, likes, reports, messages, and sessions.</p>
+            <p>• <strong>Ranking Model:</strong> On-device parameters used to order your feed. These never leave your browser.</p>
             <p>• <strong>Reputation and Interest Profile:</strong> Data used to rank feed content.</p>
             <p>This information never leaves your device except as described in Section 3.</p>
 
@@ -1450,7 +1496,7 @@ function showPrivacy() {
             <p>We do not receive, store, or have access to this information. However, you acknowledge that other users may store, copy, or redistribute your Content. You should not share any information that you wish to keep confidential.</p>
 
             <h4>4. How We Use Information</h4>
-            <p>We do not use your information because we do not collect it. All processing of locally stored data occurs on your device for the sole purpose of providing the Service to you. Local analytics counters are used to display your usage statistics within the User Analytics tab and are never transmitted to us or any third party.</p>
+            <p>We do not use your information because we do not collect it. All processing of locally stored data occurs on your device for the sole purpose of providing the Service to you. Local analytics counters are used to display your usage statistics within the User Analytics tab and are never transmitted to us or any third party. The ranking model is trained exclusively on your device using your own interactions.</p>
 
             <h4>5. Third-Party Components</h4>
             <p>The Service loads the PeerJS library from a public content delivery network (CDN) solely to establish WebRTC connections. This may result in your IP address being visible to the CDN provider and to other peers in the Network, as is inherent in any peer-to-peer system. We do not control and are not responsible for the privacy practices of any CDN provider.</p>
@@ -1476,288 +1522,306 @@ function showPrivacy() {
             <h4>12. Contact</h4>
             <p>For questions about this Privacy Policy, please contact the maintainers of the public directory instance you use, or the YipYap community. As a decentralized project, we do not maintain a central contact point.</p>
         </div>
-    `, [{ label: 'Close', class: 'btn-primary' }], true);
+    `, [{ label: 'Close', class: 'btn-primary' }]);
 }
 
 /* ============================================================================
-   12. APPLICATION STATE
+   12. RANKING MODEL — always-on online learning
+   ---------------------------------------------------------------------------
+   Every render, every post is scored from scratch. Every interaction updates
+   the user weights immediately with online gradient descent. No batching,
+   no scheduled retrains. Works with any number of posts (even two).
    ============================================================================ */
-let currentUser = null;
-let myPeerId = null;
-let appInitialized = false;
-let authInFlight = false;
-let viewingUserId = null;
+const FeatureKeys = [
+    'ageHours','isNew','likeCount','dislikeCount','replyCount','reportCount',
+    'viewerCount','likeRatio','dislikeRatio','replyRatio','reportRatio',
+    'hasImage','hasVideo','hasFile','textLength','hasQuestion','hasExclamation',
+    'hasLink','followedAuthor','authorRep','freshnessSpike','socialVelocity',
+    'novelty','curiosity','streakBonus','nearMiss','curiosityGap'
+];
+
+function extractFeatures(post) {
+    const likedBy     = post.likedBy || [];
+    const dislikedBy  = post.dislikedBy || [];
+    const replies     = post.replies || [];
+    const reports     = post.reports || [];
+    const views       = Math.max(1, post.viewerCount || 0);
+    const ageHours    = (Date.now() - post.time) / 3600000;
+    const text        = post.text || '';
+    const likeCount   = likedBy.length;
+    const dislikeCount= dislikedBy.length;
+    const replyCount  = replies.length;
+    const reportCount = reports.length;
+    const interactions= likeCount + dislikeCount;
+
+    const f = {
+        ageHours:       Math.min(ageHours / 24, 5),
+        isNew:          ageHours < 1 ? 1 : 0,
+        likeCount:      Math.min(likeCount / 20, 5),
+        dislikeCount:   Math.min(dislikeCount / 10, 5),
+        replyCount:     Math.min(replyCount / 10, 5),
+        reportCount:    Math.min(reportCount / 5, 5),
+        viewerCount:    Math.min(views / 50, 5),
+        likeRatio:      interactions > 0 ? likeCount / interactions : 0.5,
+        dislikeRatio:   interactions > 0 ? dislikeCount / interactions : 0,
+        replyRatio:     Math.min(replyCount / views, 1),
+        reportRatio:    Math.min(reportCount / views, 1),
+        hasImage:       post.attachment && post.attachment.type && post.attachment.type.startsWith('image/') ? 1 : 0,
+        hasVideo:       post.attachment && post.attachment.type && post.attachment.type.startsWith('video/') ? 1 : 0,
+        hasFile:        post.attachment ? 1 : 0,
+        textLength:     Math.min(text.length / 500, 3),
+        hasQuestion:    text.includes('?') ? 1 : 0,
+        hasExclamation: text.includes('!') ? 1 : 0,
+        hasLink:        /https?:\/\//i.test(text) ? 1 : 0,
+        followedAuthor: 0,
+        authorRep:      0,
+        freshnessSpike: Math.exp(-ageHours / 0.5),
+        socialVelocity: computeVelocity(post),
+        novelty:        0,
+        curiosity:      0,
+        streakBonus:    0,
+        nearMiss:       0,
+        curiosityGap:   (text.includes('?') ? 1 : 0) + (text.includes('...') ? 1 : 0)
+    };
+    return f;
+}
+
+function computeVelocity(post) {
+    const now = Date.now();
+    const windowMs = 3600000;
+    let recent = 0;
+    (post.likedBy || []).forEach(x => { if (now - (x.time || post.time) < windowMs) recent++; });
+    (post.replies || []).forEach(x => { if (now - (x.time || post.time) < windowMs) recent++; });
+    return Math.tanh(recent / 3);
+}
+
+function tokenize(text) {
+    return (text || '').toLowerCase().match(/\b[a-z0-9]{3,}\b/g) || [];
+}
+
+function updateRecentTopics(topics) {
+    const m = DB.model;
+    const set = new Set(m.recentTopics || []);
+    topics.forEach(t => set.add(t));
+    m.recentTopics = Array.from(set).slice(-60);
+}
+
+function computeNovelty(post) {
+    const m = DB.model;
+    const recent = new Set(m.recentTopics || []);
+    if (!recent.size) return 1;
+    const topics = tokenize(post.text);
+    if (!topics.length) return 0.5;
+    let overlap = 0;
+    topics.forEach(t => { if (recent.has(t)) overlap++; });
+    return 1 - Math.min(1, overlap / topics.length);
+}
+
+function learningRate() {
+    const n = DB.model.interactionCount || 0;
+    return LEARNING_RATE_BASE / (1 + LEARNING_RATE_DECAY * n);
+}
+
+function predict(features) {
+    const m = DB.model;
+    let sum = m.bias || 0;
+    for (let i = 0; i < FeatureKeys.length; i++) {
+        const k = FeatureKeys[i];
+        const w = m.weights[k] || 0;
+        sum += w * features[k];
+    }
+    return sum;
+}
+
+function scorePost(post, context) {
+    const m = DB.model;
+    const features = extractFeatures(post);
+    context = context || {};
+
+    features.followedAuthor = DB.following.some(f => f.peerId === post.authorId) ? 1 : 0;
+    features.authorRep = (getUserRep(post.authorId) / 100);
+    features.novelty = computeNovelty(post);
+    features.curiosity = Math.sqrt(
+        FeatureKeys.reduce((acc, k) => acc + (m.variance[k] || 0.1), 0) / FeatureKeys.length
+    );
+    features.streakBonus = Math.min(m.streakDays || 0, 7) / 7;
+    features.nearMiss = Math.exp(-Math.pow(predict(features) - (m.engagementThreshold || 0.5), 2) / (2 * 0.16));
+
+    let personalization = predict(features);
+    if (!isFinite(personalization)) personalization = 0;
+
+    // Session term
+    let sessionTerm = 0;
+    for (let i = 0; i < FeatureKeys.length; i++) {
+        const k = FeatureKeys[i];
+        sessionTerm += (m.sessionWeights[k] || 0) * features[k];
+    }
+    sessionTerm *= 0.3;
+
+    // Mood term
+    let moodTerm = 0;
+    for (let i = 0; i < FeatureKeys.length; i++) {
+        const k = FeatureKeys[i];
+        moodTerm += (m.moodVector[k] || 0) * features[k];
+    }
+    moodTerm *= 0.2;
+
+    // Novelty
+    const noveltyTerm = 0.8 * features.novelty;
+
+    // Curiosity (exploration bonus)
+    const curiosityTerm = 0.4 * features.curiosity;
+
+    // Social proof
+    const socialTerm = 1.5 * features.likeRatio * features.authorRep
+                     + 1.0 * features.replyRatio
+                     + 0.6 * features.socialVelocity;
+
+    // Penalties
+    const penaltyTerm = 12 * features.reportRatio
+                      + 3 * features.dislikeRatio;
+
+    // Freshness spike
+    const freshnessBoost = 2.0 * features.freshnessSpike;
+
+    // Near-miss
+    const nearMissBoost = 0.3 * features.nearMiss;
+
+    // Streak
+    const streakBoost = 0.4 * features.streakBonus;
+
+    // Curiosity gap
+    const curiosityGapBoost = 0.3 * features.curiosityGap;
+
+    // Social velocity
+    const velocityBoost = 0.8 * features.socialVelocity;
+
+    // Follow boost
+    const followBoost = features.followedAuthor * 1.2;
+
+    // Variable reward noise
+    const noise = 0.25 * gaussianRandom();
+
+    // Loss-aversion refresh handling
+    let refreshRebound = 0;
+    if (m.lastTopScore != null && features.ageHours < 0.05) {
+        refreshRebound = 0.2 * Math.max(0, m.lastTopScore - personalization);
+    }
+
+    return personalization + sessionTerm + moodTerm + noveltyTerm + curiosityTerm
+         + socialTerm - penaltyTerm + freshnessBoost + nearMissBoost + streakBoost
+         + curiosityGapBoost + velocityBoost + followBoost + noise + refreshRebound;
+}
+
+function updateModel(post, reward) {
+    const m = DB.model;
+    const features = extractFeatures(post);
+    features.followedAuthor = DB.following.some(f => f.peerId === post.authorId) ? 1 : 0;
+    features.authorRep = (getUserRep(post.authorId) / 100);
+
+    const prediction = predict(features);
+    const error = reward - prediction;
+    const lr = learningRate();
+
+    for (let i = 0; i < FeatureKeys.length; i++) {
+        const k = FeatureKeys[i];
+        const x = features[k];
+        if (x === 0) continue;
+        const oldW = m.weights[k] || 0;
+        const newW = clamp(oldW + lr * error * x, -WEIGHT_CLIP, WEIGHT_CLIP);
+        m.weights[k] = newW * (1 - WEIGHT_DECAY);
+
+        const oldV = m.variance[k] || 0.1;
+        m.variance[k] = (1 - VARIANCE_ALPHA) * oldV + VARIANCE_ALPHA * error * error;
+
+        const oldS = m.sessionWeights[k] || 0;
+        m.sessionWeights[k] = clamp(oldS + SESSION_LR * error * x, -WEIGHT_CLIP, WEIGHT_CLIP);
+
+        const oldMood = m.moodVector[k] || 0;
+        m.moodVector[k] = clamp(oldMood * 0.85 + SESSION_LR * 0.5 * error * x, -WEIGHT_CLIP, WEIGHT_CLIP);
+    }
+    m.bias = clamp((m.bias || 0) + lr * error, -BIAS_CLIP, BIAS_CLIP);
+
+    // Engagement threshold learns from posts the user actually interacted with.
+    if (reward > 0.2) {
+        const a = 0.05;
+        m.engagementThreshold = (1 - a) * (m.engagementThreshold || 0.5) + a * prediction;
+        m.engagementCount = (m.engagementCount || 0) + 1;
+    }
+
+    m.interactionCount = (m.interactionCount || 0) + 1;
+    m.lastUpdate = Date.now();
+
+    // Update recent topics with this post's topics.
+    updateRecentTopics(tokenize(post.text));
+
+    schedulePersist(1200);
+    refreshAnalyticsIfActive();
+}
+
+function decayMood() {
+    const m = DB.model;
+    const factor = Math.pow(0.5, (ANALYTICS_REFRESH / 60000) / MOOD_HALFLIFE_MIN);
+    for (const k of Object.keys(m.moodVector)) {
+        m.moodVector[k] *= factor;
+        if (Math.abs(m.moodVector[k]) < 0.001) delete m.moodVector[k];
+    }
+}
+
+function resetSession() {
+    const m = DB.model;
+    for (const k of Object.keys(m.sessionWeights)) {
+        m.sessionWeights[k] *= SESSION_DECAY;
+        if (Math.abs(m.sessionWeights[k]) < 0.001) delete m.sessionWeights[k];
+    }
+    m.sessionStartAt = Date.now();
+}
+
+function updateStreak() {
+    const m = DB.model;
+    const today = dayKey(Date.now());
+    const last = m.lastSessionDate;
+    if (!last) { m.streakDays = 1; }
+    else if (last === today) { /* same day */ }
+    else {
+        const yesterday = dayKey(Date.now() - 86400000);
+        if (last === yesterday) m.streakDays = (m.streakDays || 0) + 1;
+        else m.streakDays = 1;
+    }
+    m.lastSessionDate = today;
+}
+
+function getVisibleFeed() {
+    pruneReportedPosts();
+    const ownerId = currentUser ? currentUser.id : null;
+
+    // Always rescore. Always sort. Works with any number of posts.
+    const scored = DB.posts
+        .filter(p => !DB.dislikedPosts.includes(p.id) || p.authorId === ownerId)
+        .map(p => ({ post: p, score: scorePost(p) }))
+        .sort((a, b) => b.score - a.score);
+
+    // Record the top score for loss-aversion handling.
+    if (scored.length && currentUser) {
+        DB.model.lastTopScore = scored[0].score;
+    }
+
+    return scored.map(x => x.post);
+}
 
 /* ============================================================================
-   13. AUTHENTICATION
-   ============================================================================ */
-function pruneGuestAccounts() {
-    const cutoff = Date.now() - 7 * 24 * 3600 * 1000;
-    const session = readSession();
-    const activeGuestId = session ? session.userId : null;
-    Object.keys(DB.users).forEach(id => {
-        const u = DB.users[id];
-        if (u && u.isGuest && id !== activeGuestId && (u.createdAt || 0) < cutoff) {
-            delete DB.users[id];
-            delete DB.reputation[id];
-        }
-    });
-}
-
-async function register() {
-    if (authInFlight) return;
-
-    const nickEl  = document.getElementById('regNick');
-    const emailEl = document.getElementById('regEmail');
-    const passEl  = document.getElementById('regPassword');
-    const ageOk   = document.getElementById('regAgeCheck').checked;
-    const termsOk = document.getElementById('regTermsCheck').checked;
-    const button  = document.getElementById('regBtn');
-
-    try {
-        const nick  = nickEl.value.trim();
-        const email = emailEl.value.trim().toLowerCase();
-        const pass  = passEl.value;
-
-        if (!nick || !email || !pass) throw new Error('Please fill in every field.');
-        if (nick.length > 32) throw new Error('Nickname must be 32 characters or fewer.');
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Please enter a valid email address.');
-        if (pass.length < 6) throw new Error('Password must be at least 6 characters.');
-        if (!ageOk) throw new Error('You must confirm you are 12 years of age or older.');
-        if (!termsOk) throw new Error('You must agree to the Terms of Service and Privacy Policy.');
-
-        authInFlight = true;
-        button.disabled = true;
-
-        const exists = Object.keys(DB.users).some(id => {
-            const u = DB.users[id];
-            return u && !u.isGuest && u.email === email;
-        });
-        if (exists) throw new Error('That email is already registered on this device.');
-
-        const credentials = await createPasswordRecord(pass);
-        const user = Object.assign({
-            id: uid('yp'),
-            nick,
-            email,
-            createdAt: Date.now(),
-            bio: '',
-            isGuest: false,
-            ageConfirmed: true,
-            termsAcceptedAt: Date.now()
-        }, credentials);
-
-        DB.users[user.id] = user;
-        if (DB.reputation[user.id] == null) DB.reputation[user.id] = 50;
-        pruneGuestAccounts();
-
-        const status = persist();
-        if (status === 'quota') throw new Error('Device storage is full. Free some space and try again.');
-
-        saveSession(user.id);
-        trackEvent('sessions');
-        initApp(user);
-
-        if (status === 'memory') {
-            showToast('Storage is blocked by the browser — your account will not survive a reload.', 'warning', 7000);
-        } else {
-            showToast('Account created. Welcome to YipYap!', 'success');
-        }
-    } catch (err) {
-        console.error('[register]', err);
-        showAuthError('regError', err && err.message ? err.message : 'Could not create the account.');
-    } finally {
-        authInFlight = false;
-        if (button) button.disabled = false;
-    }
-}
-
-async function login() {
-    if (authInFlight) return;
-
-    const emailEl = document.getElementById('loginEmail');
-    const passEl  = document.getElementById('loginPassword');
-    const button  = document.getElementById('loginBtn');
-
-    try {
-        const email = emailEl.value.trim().toLowerCase();
-        const pass  = passEl.value;
-
-        if (!email || !pass) throw new Error('Please enter your email and password.');
-        if (!hasWebCrypto() && !window.isSecureContext) {
-            showToast('Running without WebCrypto — sign-in still works but hashing is weaker.', 'warning', 5000);
-        }
-
-        authInFlight = true;
-        button.disabled = true;
-
-        const user = Object.keys(DB.users)
-            .map(id => DB.users[id])
-            .find(u => u && !u.isGuest && u.email === email);
-
-        if (!user) throw new Error('No account found for that email on this device.');
-        if (!user.passHash) throw new Error('This account has no password. Try a different login method.');
-
-        const ok = await verifyPassword(pass, user);
-        if (!ok) throw new Error('Incorrect password.');
-
-        if (user.passAlgo !== 'pbkdf2-sha256') {
-            try {
-                Object.assign(user, await createPasswordRecord(pass));
-                persist();
-            } catch (upgradeErr) {
-                console.warn('[login] password upgrade skipped', upgradeErr);
-            }
-        }
-
-        const status = persist();
-        if (status === 'quota') throw new Error('Device storage is full. Free some space and try again.');
-
-        saveSession(user.id);
-        trackEvent('sessions');
-        initApp(user);
-    } catch (err) {
-        console.error('[login]', err);
-        showAuthError('loginError', err && err.message ? err.message : 'Could not sign in.');
-    } finally {
-        authInFlight = false;
-        if (button) button.disabled = false;
-    }
-}
-
-function loginAsGuest() {
-    try {
-        const user = {
-            id: uid('guest'),
-            nick: 'Guest' + Math.floor(Math.random() * 900 + 100),
-            email: null,
-            passHash: null,
-            passAlgo: null,
-            isGuest: true,
-            createdAt: Date.now(),
-            bio: ''
-        };
-        DB.users[user.id] = user;
-        if (DB.reputation[user.id] == null) DB.reputation[user.id] = 40;
-        pruneGuestAccounts();
-        persist();
-        saveSession(user.id);
-        trackEvent('sessions');
-        initApp(user);
-        showToast('Signed in as a guest. Data stays on this device.', 'info', 4200);
-    } catch (err) {
-        console.error('[guest]', err);
-        showToast('Could not start a guest session.', 'error');
-    }
-}
-
-function logout() {
-    showModal('Logout', '<p>Are you sure you want to log out?</p>', [
-        { label: 'Cancel', class: 'btn-secondary' },
-        { label: 'Logout', class: 'btn-danger', onClick: () => {
-            flushPendingWork();
-            clearSession();
-            destroyNetworkPeers();
-            location.reload();
-        }}
-    ]);
-}
-
-function destroyNetworkPeers() {
-    [directoryPeer, hostPeer, guestPeer].forEach(p => {
-        try { if (p && !p.destroyed) p.destroy(); } catch (_) {}
-    });
-    directoryPeer = hostPeer = guestPeer = null;
-    feedConn = null;
-    guestConn = null;
-    hostConnections = [];
-    activeFeedConns = [];
-}
-
-/* ============================================================================
-   14. APP BOOTSTRAP AFTER AUTH
-   ============================================================================ */
-function initApp(user) {
-    currentUser = user;
-    myPeerId = user.id;
-
-    document.getElementById('authScreen').classList.add('hidden');
-    document.getElementById('userName').textContent = user.nick;
-    document.getElementById('userAvatar').textContent = (user.nick || '?').charAt(0).toUpperCase();
-
-    const statusEl = document.getElementById('userStatus');
-    if (user.isGuest) {
-        statusEl.textContent = 'Guest';
-        statusEl.classList.add('offline');
-    } else {
-        statusEl.textContent = 'Online';
-        statusEl.classList.remove('offline');
-    }
-
-    applyTheme();
-    renderFeed();
-    renderMyPosts();
-    renderProfile();
-    renderSettings();
-
-    if (!appInitialized) {
-        appInitialized = true;
-        initBackgroundPeer();
-    }
-}
-
-/* ============================================================================
-   15. VIEW NAVIGATION
-   ============================================================================ */
-function switchView(viewName) {
-    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-    const view = document.getElementById('view-' + viewName);
-    if (view) view.classList.add('active');
-
-    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-    const nav = document.querySelector('.nav-item[data-view="' + viewName + '"]');
-    if (nav) nav.classList.add('active');
-
-    toggleSidebar(false);
-
-    if (viewName === 'profile')   { viewingUserId = null; renderProfile(); }
-    if (viewName === 'settings')  renderSettings();
-    if (viewName === 'myposts')   renderMyPosts();
-    if (viewName === 'feed')      renderFeed();
-
-    if (viewName === 'analytics') startAnalyticsLive();
-    else stopAnalyticsLive();
-}
-
-function toggleSidebar(force) {
-    const sidebar  = document.getElementById('sidebar');
-    const backdrop = document.getElementById('backdrop');
-    if (force === false) {
-        sidebar.classList.remove('open');
-        backdrop.classList.remove('show');
-        return;
-    }
-    sidebar.classList.toggle('open');
-    backdrop.classList.toggle('show');
-}
-
-/* ============================================================================
-   16. POST STORE HELPERS
+   13. POST STORE
    ============================================================================ */
 function getPost(id) {
-    for (let i = 0; i < DB.posts.length; i++) {
-        if (DB.posts[i].id === id) return DB.posts[i];
-    }
+    for (let i = 0; i < DB.posts.length; i++) if (DB.posts[i].id === id) return DB.posts[i];
     return null;
 }
-
 function upsertPost(post) {
     const idx = DB.posts.findIndex(p => p.id === post.id);
     if (idx >= 0) DB.posts[idx] = post;
     else DB.posts.unshift(post);
     trimPosts();
 }
-
 function removePostById(id) {
     const idx = DB.posts.findIndex(p => p.id === id);
     if (idx < 0) return;
@@ -1772,7 +1836,6 @@ function removePostById(id) {
         AttachmentStore.remove(post.attachment.id);
     }
 }
-
 function trimPosts() {
     if (DB.posts.length <= MAX_POSTS) return;
     const ownerId = currentUser ? currentUser.id : null;
@@ -1795,67 +1858,28 @@ function trimPosts() {
 }
 
 /* ============================================================================
-   17. REPUTATION + RANKING
+   14. REPUTATION
    ============================================================================ */
 function getUserRep(userId) {
-    const value = DB.reputation[userId];
-    return typeof value === 'number' ? value : 50;
+    const v = DB.reputation[userId];
+    return typeof v === 'number' ? v : 50;
 }
-
 function adjustReputation(userId, delta) {
     if (!userId) return;
     if (typeof DB.reputation[userId] !== 'number') DB.reputation[userId] = 50;
-    DB.reputation[userId] = Math.max(0, Math.min(100, DB.reputation[userId] + delta));
+    DB.reputation[userId] = clamp(DB.reputation[userId] + delta, 0, 100);
 }
-
-function tokenize(text) {
-    return (text || '').toLowerCase().match(/\b[a-z0-9]{3,}\b/g) || [];
-}
-
 function updateInterestProfile(text, weight) {
     if (!DB.interestProfile) DB.interestProfile = {};
     tokenize(text).forEach(word => {
         const current = DB.interestProfile[word] || 0;
-        DB.interestProfile[word] = Math.max(-8, Math.min(15, current + weight));
+        DB.interestProfile[word] = clamp(current + weight, -8, 15);
     });
-}
-
-function scorePost(post) {
-    const profile = DB.interestProfile || {};
-    let score = 0;
-
-    tokenize((post.text || '') + ' ' + (post.nick || '')).forEach(word => {
-        if (profile[word]) score += profile[word] * 2.4;
-    });
-
-    const likes    = (post.likedBy || []).length;
-    const dislikes = (post.dislikedBy || []).length;
-    score += (likes - dislikes) * 2.8;
-    score += (post.replies || []).length * 1.9;
-
-    if (DB.following.some(f => f.peerId === post.authorId)) score += 7;
-
-    const hours = (Date.now() - post.time) / 3600000;
-    score -= hours * 0.55;
-    if (hours < 0.5) score += 8;
-    else if (hours < 2) score += 5;
-    else if (hours < 8) score += 2;
-
-    score *= (0.4 + (getUserRep(post.authorId) / 100) * 1.1);
-
-    const viewers = Math.max(1, post.viewerCount || 1);
-    const reports = (post.reports || []).length;
-    score -= (reports / viewers) * 55;
-    if (reports >= 2) score -= reports * 4.5;
-
-    score += Math.sin(post.time / 80000) * 1.2;
-    return score;
 }
 
 function pruneReportedPosts() {
     const ownerId = currentUser ? currentUser.id : null;
     const removed = [];
-
     DB.posts = DB.posts.filter(post => {
         if (post.authorId === ownerId) return true;
         const reports = (post.reports || []).length;
@@ -1866,7 +1890,6 @@ function pruneReportedPosts() {
         }
         return true;
     });
-
     if (removed.length) {
         removed.forEach(id => {
             DB.likedPosts = DB.likedPosts.filter(x => x !== id);
@@ -1877,27 +1900,12 @@ function pruneReportedPosts() {
     }
 }
 
-function getVisibleFeed() {
-    pruneReportedPosts();
-    const ownerId = currentUser ? currentUser.id : null;
-
-    if (DB.posts.length < FEED_ALGO_THRESHOLD) {
-        return DB.posts.slice().sort((a, b) => b.time - a.time);
-    }
-
-    const disliked = new Set(DB.dislikedPosts);
-    return DB.posts
-        .filter(p => !disliked.has(p.id) || p.authorId === ownerId)
-        .map(p => ({ post: p, score: scorePost(p) }))
-        .sort((a, b) => b.score - a.score)
-        .map(x => x.post);
-}
-
 /* ============================================================================
-   18. VIEW TRACKING
+   15. VIEW TRACKING
    ============================================================================ */
 let pendingViewUpdates = [];
 let viewFlushTimer = null;
+const viewDwellStart = new Map();
 
 function queueView(post) {
     if (!currentUser) return;
@@ -1911,8 +1919,8 @@ function queueView(post) {
     if (post.viewedBy.length > MAX_VIEWED_BY) post.viewedBy = post.viewedBy.slice(-MAX_VIEWED_BY);
 
     pendingViewUpdates.push({ postId: post.id, viewerId: currentUser.id, time: entry.time });
+    viewDwellStart.set(post.id, Date.now());
     schedulePersist(1200);
-    refreshAnalyticsIfActive();
 
     if (!viewFlushTimer) {
         viewFlushTimer = setTimeout(() => {
@@ -1942,14 +1950,11 @@ function applyViewUpdates(updates) {
         if (post.viewedBy.length > MAX_VIEWED_BY) post.viewedBy = post.viewedBy.slice(-MAX_VIEWED_BY);
         changed = true;
     });
-    if (changed) {
-        schedulePersist(1200);
-        refreshAnalyticsIfActive();
-    }
+    if (changed) schedulePersist(1200);
 }
 
 /* ============================================================================
-   19. NETWORK
+   16. NETWORK
    ============================================================================ */
 let directoryPeer = null;
 let isDirectory = false;
@@ -1972,7 +1977,6 @@ function updateFeedStatus() {
         else netEl.textContent = 'Connecting...';
     }
 }
-
 function peerLibraryAvailable() { return typeof Peer !== 'undefined'; }
 
 function initBackgroundPeer() {
@@ -1981,9 +1985,8 @@ function initBackgroundPeer() {
         updateFeedStatus();
         return;
     }
-
     try { directoryPeer = new Peer(DIR_ID, { debug: 0 }); }
-    catch (err) { console.warn('[peer] init failed', err); becomeFeedClient(); return; }
+    catch (err) { becomeFeedClient(); return; }
 
     directoryPeer.on('open', () => {
         isDirectory = true;
@@ -1991,21 +1994,15 @@ function initBackgroundPeer() {
         updateFeedStatus();
         renderFeed();
     });
-
     directoryPeer.on('connection', handleDirectoryConnection);
-
     directoryPeer.on('error', err => {
         if (err && err.type === 'unavailable-id') {
             isDirectory = false;
             try { directoryPeer.destroy(); } catch (_) {}
             directoryPeer = null;
             becomeFeedClient();
-        } else {
-            console.warn('[peer] directory error', err);
-            updateFeedStatus();
-        }
+        } else updateFeedStatus();
     });
-
     directoryPeer.on('disconnected', () => {
         try { directoryPeer && directoryPeer.reconnect(); } catch (_) {}
     });
@@ -2014,36 +2011,24 @@ function initBackgroundPeer() {
 function handleDirectoryConnection(conn) {
     activeFeedConns.push(conn);
     let registeredRoom = null;
-
     conn.on('data', raw => {
         const msg = safeParse(typeof raw === 'string' ? raw : JSON.stringify(raw), null);
         if (!msg || !msg.type) return;
-
         switch (msg.type) {
             case 'register_room':
                 registeredRoom = { room: msg.room, hostId: msg.hostId };
                 if (!activePublicRooms.some(r => r.room === msg.room && r.hostId === msg.hostId)) {
-                    activePublicRooms.push({
-                        room: msg.room, host: msg.host, hostId: msg.hostId, time: Date.now()
-                    });
+                    activePublicRooms.push({ room: msg.room, host: msg.host, hostId: msg.hostId, time: Date.now() });
                 }
                 break;
             case 'unregister_room':
-                activePublicRooms = activePublicRooms.filter(
-                    r => !(r.room === msg.room && r.hostId === msg.hostId)
-                );
+                activePublicRooms = activePublicRooms.filter(r => !(r.room === msg.room && r.hostId === msg.hostId));
                 break;
             case 'get_rooms':
-                conn.send(JSON.stringify({
-                    type: 'room_list',
-                    rooms: activePublicRooms.filter(r => Date.now() - r.time < 3600000)
-                }));
+                conn.send(JSON.stringify({ type: 'room_list', rooms: activePublicRooms.filter(r => Date.now() - r.time < 3600000) }));
                 break;
             case 'get_feed':
-                conn.send(JSON.stringify({
-                    type: 'feed_data',
-                    posts: DB.posts.slice(0, 200).map(serializePost)
-                }));
+                conn.send(JSON.stringify({ type: 'feed_data', posts: DB.posts.slice(0, 200).map(serializePost) }));
                 break;
             case 'new_post':
                 if (msg.post && msg.post.id && !getPost(msg.post.id)) {
@@ -2052,7 +2037,6 @@ function handleDirectoryConnection(conn) {
                         upsertPost(post);
                         schedulePersist(600);
                         renderFeed();
-                        refreshAnalyticsIfActive();
                         if (post.authorId !== currentUser.id) {
                             notify('New post from ' + post.nick, (post.text || '').slice(0, 80));
                         }
@@ -2066,7 +2050,6 @@ function handleDirectoryConnection(conn) {
                     upsertPost(incoming);
                     schedulePersist(600);
                     renderFeed();
-                    refreshAnalyticsIfActive();
                 }
                 relayToFeedPeers(conn, msg);
                 break;
@@ -2076,7 +2059,6 @@ function handleDirectoryConnection(conn) {
                 schedulePersist(400);
                 renderFeed();
                 renderMyPosts();
-                refreshAnalyticsIfActive();
                 relayToFeedPeers(conn, msg);
                 break;
             case 'post_views':
@@ -2089,23 +2071,16 @@ function handleDirectoryConnection(conn) {
                 applyFollowPayload(msg);
                 relayToFeedPeers(conn, msg);
                 break;
-            default:
-                break;
+            default: break;
         }
     });
-
     conn.on('close', () => {
         activeFeedConns = activeFeedConns.filter(c => c !== conn);
         if (registeredRoom) {
-            activePublicRooms = activePublicRooms.filter(
-                r => !(r.room === registeredRoom.room && r.hostId === registeredRoom.hostId)
-            );
+            activePublicRooms = activePublicRooms.filter(r => !(r.room === registeredRoom.room && r.hostId === registeredRoom.hostId));
         }
     });
-
-    conn.on('error', () => {
-        activeFeedConns = activeFeedConns.filter(c => c !== conn);
-    });
+    conn.on('error', () => { activeFeedConns = activeFeedConns.filter(c => c !== conn); });
 }
 
 function relayToFeedPeers(originConn, msg) {
@@ -2118,24 +2093,20 @@ function relayToFeedPeers(originConn, msg) {
 function becomeFeedClient() {
     if (!peerLibraryAvailable()) return;
     isDirectory = false;
-
     try { directoryPeer = new Peer({ debug: 0 }); }
-    catch (err) { console.warn('[peer] client init failed', err); return; }
+    catch (err) { return; }
 
     directoryPeer.on('open', () => {
         feedConn = directoryPeer.connect(DIR_ID, { reliable: true });
-
         feedConn.on('open', () => {
             updateFeedStatus();
             feedConn.send(JSON.stringify({ type: 'get_feed' }));
             feedConn.send(JSON.stringify({ type: 'get_rooms' }));
             broadcastFollows();
         });
-
         feedConn.on('data', raw => {
             const msg = safeParse(typeof raw === 'string' ? raw : JSON.stringify(raw), null);
             if (!msg || !msg.type) return;
-
             switch (msg.type) {
                 case 'feed_data': {
                     const incoming = (msg.posts || []).map(deserializePost).filter(Boolean);
@@ -2145,7 +2116,6 @@ function becomeFeedClient() {
                     trimPosts();
                     schedulePersist(600);
                     renderFeed();
-                    refreshAnalyticsIfActive();
                     break;
                 }
                 case 'new_post': {
@@ -2154,21 +2124,13 @@ function becomeFeedClient() {
                         upsertPost(post);
                         schedulePersist(600);
                         renderFeed();
-                        refreshAnalyticsIfActive();
-                        if (post.authorId !== currentUser.id) {
-                            notify('New post from ' + post.nick, (post.text || '').slice(0, 80));
-                        }
+                        if (post.authorId !== currentUser.id) notify('New post from ' + post.nick, (post.text || '').slice(0, 80));
                     }
                     break;
                 }
                 case 'update_post': {
                     const post = deserializePost(msg.post);
-                    if (post) {
-                        upsertPost(post);
-                        schedulePersist(600);
-                        renderFeed();
-                        refreshAnalyticsIfActive();
-                    }
+                    if (post) { upsertPost(post); schedulePersist(600); renderFeed(); }
                     break;
                 }
                 case 'delete_post':
@@ -2176,28 +2138,18 @@ function becomeFeedClient() {
                     schedulePersist(400);
                     renderFeed();
                     renderMyPosts();
-                    refreshAnalyticsIfActive();
                     break;
-                case 'post_views':
-                    applyViewUpdates(msg.updates);
-                    break;
+                case 'post_views': applyViewUpdates(msg.updates); break;
                 case 'follow':
                 case 'unfollow':
-                case 'sync_follows':
-                    applyFollowPayload(msg);
-                    break;
-                case 'room_list':
-                    renderPublicRooms(msg.rooms || []);
-                    break;
-                default:
-                    break;
+                case 'sync_follows': applyFollowPayload(msg); break;
+                case 'room_list': renderPublicRooms(msg.rooms || []); break;
+                default: break;
             }
         });
-
         feedConn.on('close', () => { feedConn = null; updateFeedStatus(); scheduleReconnect(); });
         feedConn.on('error', () => { feedConn = null; updateFeedStatus(); scheduleReconnect(); });
     });
-
     directoryPeer.on('error', err => {
         if (err && err.type === 'unavailable-id') {
             try { directoryPeer.destroy(); } catch (_) {}
@@ -2218,57 +2170,33 @@ function scheduleReconnect() {
         becomeFeedClient();
     }, 3500);
 }
-
 function broadcastToFeed(msg) {
     const payload = JSON.stringify(msg);
-    if (isDirectory) {
-        activeFeedConns.forEach(c => { if (c.open) { try { c.send(payload); } catch (_) {} } });
-    } else if (feedConn && feedConn.open) {
-        try { feedConn.send(payload); } catch (_) {}
-    }
+    if (isDirectory) activeFeedConns.forEach(c => { if (c.open) { try { c.send(payload); } catch (_) {} } });
+    else if (feedConn && feedConn.open) { try { feedConn.send(payload); } catch (_) {} }
 }
 
-/* --------------------------- Follows ------------------------------------- */
 function applyFollowPayload(msg) {
     if (!currentUser) return;
     let changed = false;
-
     const handleSingle = (targetId, follower, isUnfollow) => {
         if (!follower || !follower.peerId) return;
         if (targetId !== currentUser.id) return;
         if (follower.peerId === currentUser.id) return;
-
         if (isUnfollow) {
             const before = DB.followers.length;
             DB.followers = DB.followers.filter(f => f.peerId !== follower.peerId);
             if (DB.followers.length !== before) changed = true;
         } else if (!DB.followers.some(f => f.peerId === follower.peerId)) {
-            DB.followers.push({
-                peerId: follower.peerId,
-                nick: follower.nick || 'User',
-                time: Date.now()
-            });
+            DB.followers.push({ peerId: follower.peerId, nick: follower.nick || 'User', time: Date.now() });
             changed = true;
         }
     };
-
-    if (msg.type === 'sync_follows') {
-        (msg.follows || []).forEach(item => {
-            if (!item) return;
-            handleSingle(item.targetId, item.follower, false);
-        });
-    } else if (msg.type === 'follow') {
-        handleSingle(msg.targetId, msg.follower, false);
-    } else if (msg.type === 'unfollow') {
-        handleSingle(msg.targetId, msg.follower, true);
-    }
-
-    if (changed) {
-        schedulePersist(500);
-        refreshAnalyticsIfActive();
-    }
+    if (msg.type === 'sync_follows') (msg.follows || []).forEach(item => { if (item) handleSingle(item.targetId, item.follower, false); });
+    else if (msg.type === 'follow') handleSingle(msg.targetId, msg.follower, false);
+    else if (msg.type === 'unfollow') handleSingle(msg.targetId, msg.follower, true);
+    if (changed) schedulePersist(500);
 }
-
 function broadcastFollows() {
     if (!currentUser || !DB.following.length) return;
     broadcastToFeed({
@@ -2281,25 +2209,22 @@ function broadcastFollows() {
 }
 
 /* ============================================================================
-   20. POST SERIALIZATION
+   17. POST SERIALIZATION
    ============================================================================ */
 function serializePost(post) {
     const out = Object.assign({}, post);
     if (post.attachment) out.attachment = expandAttachment(post.attachment);
     return out;
 }
-
 function deserializePost(raw) {
     if (!raw || !raw.id) return null;
     const post = migratePost(raw);
-    if (post.attachment && post.attachment.dataUrl) {
-        post.attachment = storeAttachment(post.attachment);
-    }
+    if (post.attachment && post.attachment.dataUrl) post.attachment = storeAttachment(post.attachment);
     return post;
 }
 
 /* ============================================================================
-   21. ATTACHMENT SELECTION UI
+   18. ATTACHMENT UI
    ============================================================================ */
 let pendingAttachment = null;
 
@@ -2307,11 +2232,7 @@ function handleFileSelect(event, context) {
     const file = event.target.files && event.target.files[0];
     event.target.value = '';
     if (!file) return;
-    if (file.size > MAX_FILE_SIZE) {
-        showToast('File too large — the P2P limit is 2MB.', 'error');
-        return;
-    }
-
+    if (file.size > MAX_FILE_SIZE) { showToast('File too large — the P2P limit is 2MB.', 'error'); return; }
     const reader = new FileReader();
     reader.onload = e => {
         pendingAttachment = {
@@ -2330,47 +2251,36 @@ function handleFileSelect(event, context) {
     reader.onerror = () => showToast('Could not read that file.', 'error');
     reader.readAsDataURL(file);
 }
-
 function renderPostAttachmentPreview() {
     const el = document.getElementById('postAttPreview');
     if (!el) return;
     if (!pendingAttachment || pendingAttachment.context !== 'post') { el.innerHTML = ''; return; }
     let media;
-    if (pendingAttachment.type.startsWith('image/')) {
-        media = '<img src="' + pendingAttachment.dataUrl + '" alt="">';
-    } else if (pendingAttachment.type.startsWith('video/')) {
-        media = '<video src="' + pendingAttachment.dataUrl + '" controls></video>';
-    } else {
-        media = '<div class="file-att">' + escapeHtml(pendingAttachment.name) + '</div>';
-    }
+    if (pendingAttachment.type.startsWith('image/')) media = '<img src="' + pendingAttachment.dataUrl + '" alt="">';
+    else if (pendingAttachment.type.startsWith('video/')) media = '<video src="' + pendingAttachment.dataUrl + '" controls></video>';
+    else media = '<div class="file-att">' + escapeHtml(pendingAttachment.name) + '</div>';
     el.innerHTML =
         '<div class="composer-attach-preview">' + media +
         '<button class="remove-att" onclick="clearAttachment(\'post\')" aria-label="Remove attachment">×</button></div>';
 }
-
 function clearAttachment(context) {
     if (!pendingAttachment || pendingAttachment.context !== context) return;
     pendingAttachment = null;
-    if (context === 'post') {
-        renderPostAttachmentPreview();
-    } else {
+    if (context === 'post') renderPostAttachmentPreview();
+    else {
         const input = document.getElementById('chatInput');
         if (input) input.placeholder = 'Type a message...';
     }
 }
-
 function renderAttachment(att) {
     if (!att) return '';
     const full = expandAttachment(att);
     const src = full && full.dataUrl;
-
     if (!src || !isSafeDataUrl(src)) {
-        return '<div class="post-attachment"><div class="file-att">' +
-               escapeHtml(att.name || 'Attachment') + ' (unavailable)</div></div>';
+        return '<div class="post-attachment"><div class="file-att">' + escapeHtml(att.name || 'Attachment') + ' (unavailable)</div></div>';
     }
     if (att.type && att.type.startsWith('image/')) {
-        return '<div class="post-attachment"><img src="' + src +
-               '" data-act="view-image" data-src="' + src + '" alt="" loading="lazy"></div>';
+        return '<div class="post-attachment"><img src="' + src + '" data-act="view-image" data-src="' + src + '" alt="" loading="lazy"></div>';
     }
     if (att.type && att.type.startsWith('video/')) {
         return '<div class="post-attachment"><video src="' + src + '" controls preload="metadata"></video></div>';
@@ -2380,38 +2290,32 @@ function renderAttachment(att) {
            '" download="' + escapeHtml(att.name || 'file') + '">' +
            escapeHtml(att.name || 'file') + ' (' + kb + 'KB)</a></div>';
 }
-
 function renderChatAttachment(att) {
     if (!att) return '';
     const full = expandAttachment(att);
     const src = full && full.dataUrl;
     if (!src || !isSafeDataUrl(src)) return '';
-
     if (att.type && att.type.startsWith('image/')) {
-        return '<div class="chat-msg-attachment"><img src="' + src +
-               '" data-act="view-image" data-src="' + src + '" alt=""></div>';
+        return '<div class="chat-msg-attachment"><img src="' + src + '" data-act="view-image" data-src="' + src + '" alt=""></div>';
     }
     if (att.type && att.type.startsWith('video/')) {
         return '<div class="chat-msg-attachment"><video src="' + src + '" controls></video></div>';
     }
     return '<div class="chat-msg-attachment"><a class="file-att" href="' + src +
-           '" download="' + escapeHtml(att.name || 'file') +
-           '" style="font-size:0.8rem;">' + escapeHtml(att.name || 'file') + '</a></div>';
+           '" download="' + escapeHtml(att.name || 'file') + '" style="font-size:0.8rem;">' +
+           escapeHtml(att.name || 'file') + '</a></div>';
 }
 
 /* ============================================================================
-   22. POST CREATION
+   19. POST CREATION
    ============================================================================ */
 function postMessage() {
     const input = document.getElementById('postInput');
     if (!input || !currentUser) return;
-
     let text = input.value.trim();
     const attachment = (pendingAttachment && pendingAttachment.context === 'post') ? pendingAttachment : null;
     if (!text && !attachment) return;
-
     text = censorText(text);
-
     const post = {
         id: uid('p'),
         authorId: currentUser.id,
@@ -2419,41 +2323,29 @@ function postMessage() {
         text,
         attachment: attachment ? storeAttachment(attachment) : null,
         time: Date.now(),
-        likedBy: [],
-        dislikedBy: [],
-        viewedBy: [],
-        viewerCount: 0,
-        replies: [],
-        reports: []
+        likedBy: [], dislikedBy: [], viewedBy: [],
+        viewerCount: 0, replies: [], reports: []
     };
-
     input.value = '';
     if (attachment) clearAttachment('post');
-
     upsertPost(post);
     updateInterestProfile(text, 2.5);
     if (typeof DB.reputation[currentUser.id] !== 'number') DB.reputation[currentUser.id] = 50;
-
     persist();
     trackEvent('posts');
-
     renderFeed();
     renderMyPosts();
-    refreshAnalyticsIfActive();
-
     broadcastToFeed({ type: 'new_post', post: serializePost(post) });
     showToast('Posted!', 'success');
 }
 
 /* ============================================================================
-   23. FEED RENDERING
+   20. FEED RENDERING
    ============================================================================ */
 function renderFeed() {
     const el = document.getElementById('feedList');
     if (!el || !currentUser) return;
-
     const posts = getVisibleFeed();
-
     if (!posts.length) {
         el.innerHTML =
             '<div class="empty-state">' +
@@ -2462,19 +2354,13 @@ function renderFeed() {
             '<div class="empty-state-sub">Be the first to share something!</div></div>';
         return;
     }
-
     el.innerHTML = posts.map(p => renderPostCard(p, false)).join('');
     posts.forEach(queueView);
 }
-
 function renderMyPosts() {
     const el = document.getElementById('myPostsList');
     if (!el || !currentUser) return;
-
-    const mine = DB.posts
-        .filter(p => p.authorId === currentUser.id)
-        .sort((a, b) => b.time - a.time);
-
+    const mine = DB.posts.filter(p => p.authorId === currentUser.id).sort((a, b) => b.time - a.time);
     if (!mine.length) {
         el.innerHTML =
             '<div class="empty-state">' +
@@ -2483,10 +2369,8 @@ function renderMyPosts() {
             '<div class="empty-state-sub">Share something on the Global Feed!</div></div>';
         return;
     }
-
     el.innerHTML = mine.map(p => renderPostCard(p, true)).join('');
 }
-
 function renderPostCard(post, isMyPost) {
     const userId       = currentUser.id;
     const liked        = (post.likedBy || []).some(x => x.id === userId);
@@ -2560,26 +2444,26 @@ function toggleReplyInput(postId) {
 }
 
 /* ============================================================================
-   24. POST INTERACTIONS
+   21. POST INTERACTIONS — every one updates the model immediately
    ============================================================================ */
 function handleInteraction(postId, type) {
     const post = getPost(postId);
     if (!post || !currentUser) return;
-
     const userId = currentUser.id;
     post.likedBy = post.likedBy || [];
     post.dislikedBy = post.dislikedBy || [];
 
+    let reward = 0;
     if (type === 'like') {
         const existing = post.likedBy.findIndex(x => x.id === userId);
         if (existing >= 0) {
             post.likedBy.splice(existing, 1);
             DB.likedPosts = DB.likedPosts.filter(id => id !== postId);
             updateInterestProfile(post.text, -1.2);
+            reward = -0.3;
         } else {
             post.likedBy.push({ id: userId, time: Date.now() });
             if (!DB.likedPosts.includes(postId)) DB.likedPosts.push(postId);
-
             const dIdx = post.dislikedBy.findIndex(x => x.id === userId);
             if (dIdx >= 0) {
                 post.dislikedBy.splice(dIdx, 1);
@@ -2588,6 +2472,7 @@ function handleInteraction(postId, type) {
             updateInterestProfile(post.text, 3);
             adjustReputation(post.authorId, 0.5);
             trackEvent('likes');
+            reward = 1.0;
         }
     } else {
         const existing = post.dislikedBy.findIndex(x => x.id === userId);
@@ -2595,10 +2480,10 @@ function handleInteraction(postId, type) {
             post.dislikedBy.splice(existing, 1);
             DB.dislikedPosts = DB.dislikedPosts.filter(id => id !== postId);
             updateInterestProfile(post.text, 1);
+            reward = 0.2;
         } else {
             post.dislikedBy.push({ id: userId, time: Date.now() });
             if (!DB.dislikedPosts.includes(postId)) DB.dislikedPosts.push(postId);
-
             const lIdx = post.likedBy.findIndex(x => x.id === userId);
             if (lIdx >= 0) {
                 post.likedBy.splice(lIdx, 1);
@@ -2606,21 +2491,19 @@ function handleInteraction(postId, type) {
             }
             updateInterestProfile(post.text, -3);
             adjustReputation(post.authorId, -1);
+            reward = -1.0;
         }
     }
 
+    updateModel(post, reward);
     persist();
     broadcastToFeed({ type: 'update_post', post: serializePost(post) });
     renderFeed();
     renderMyPosts();
-    refreshAnalyticsIfActive();
 }
 
 function reportPost(postId) {
-    if (DB.reportsMade[postId]) {
-        showToast('You already reported this post.', 'warning');
-        return;
-    }
+    if (DB.reportsMade[postId]) { showToast('You already reported this post.', 'warning'); return; }
     const overlay = showModal('Report Post', `
         <p style="margin-bottom:12px;font-size:0.9rem;color:var(--text-muted)">Select a reason. Posts reported by 25% or more of their viewers are automatically hidden.</p>
         <div style="display:flex;flex-direction:column;gap:8px;">
@@ -2641,11 +2524,11 @@ function reportPost(postId) {
             DB.reportsMade[postId] = { reason, time: Date.now() };
             adjustReputation(post.authorId, -3.5);
             trackEvent('reports');
+            updateModel(post, -3.0);
             persist();
             broadcastToFeed({ type: 'update_post', post: serializePost(post) });
             renderFeed();
             renderMyPosts();
-            refreshAnalyticsIfActive();
             showToast('Report submitted. Thank you.', 'success');
             overlay.remove();
         };
@@ -2655,34 +2538,25 @@ function reportPost(postId) {
 function sendReply(postId) {
     const input = document.getElementById('replyText_' + postId);
     if (!input || !currentUser) return;
-
     let text = input.value.trim();
     if (!text) return;
     text = censorText(text);
-
     const post = getPost(postId);
     if (!post) return;
-
     post.replies = post.replies || [];
     post.replies.push({ authorId: currentUser.id, nick: currentUser.nick, text, time: Date.now() });
-
     updateInterestProfile(post.text, 3.5);
     adjustReputation(post.authorId, 0.7);
-
+    updateModel(post, 1.5);
     input.value = '';
     replyOpen.delete(postId);
     const box = document.getElementById('replies_' + postId);
     if (box) box.classList.add('hidden');
-
     persist();
     broadcastToFeed({ type: 'update_post', post: serializePost(post) });
     renderFeed();
     renderMyPosts();
-    refreshAnalyticsIfActive();
-
-    if (post.authorId !== currentUser.id) {
-        notify('New reply on your post', text.slice(0, 60));
-    }
+    if (post.authorId !== currentUser.id) notify('New reply on your post', text.slice(0, 60));
 }
 
 function deletePost(postId) {
@@ -2695,14 +2569,13 @@ function deletePost(postId) {
             broadcastToFeed({ type: 'delete_post', postId });
             renderFeed();
             renderMyPosts();
-            refreshAnalyticsIfActive();
             showToast('Post deleted', 'success');
         }}
     ]);
 }
 
 /* ============================================================================
-   25. PROFILE
+   22. PROFILE
    ============================================================================ */
 function viewUserProfile(userId, nick) {
     viewingUserId = userId;
@@ -2710,25 +2583,17 @@ function viewUserProfile(userId, nick) {
     switchView('profile');
     renderProfile();
 }
-
 function renderProfile() {
     const el = document.getElementById('profileContent');
     const headerActions = document.getElementById('profileHeaderActions');
     if (!el || !currentUser) return;
-
     let user, userId, isMe;
     if (viewingUserId && viewingUserId !== currentUser.id) {
         userId = viewingUserId;
         user = DB.users[userId];
         if (!user) {
             const authored = DB.posts.find(p => p.authorId === userId);
-            user = {
-                id: userId,
-                nick: (authored && authored.nick) || 'Unknown User',
-                email: null,
-                bio: '',
-                createdAt: null
-            };
+            user = { id: userId, nick: (authored && authored.nick) || 'Unknown User', email: null, bio: '', createdAt: null };
         }
         isMe = false;
     } else {
@@ -2738,11 +2603,7 @@ function renderProfile() {
         document.getElementById('profileHeaderTitle').textContent = 'My Profile';
         isMe = true;
     }
-
-    const userPosts = DB.posts
-        .filter(p => p.authorId === userId)
-        .sort((a, b) => b.time - a.time);
-
+    const userPosts = DB.posts.filter(p => p.authorId === userId).sort((a, b) => b.time - a.time);
     const followingCount = isMe ? DB.following.length : DB.following.filter(f => f.peerId === userId).length;
     const followersCount = DB.followers.filter(f => f.peerId === userId).length;
     const isFollowing = DB.following.some(f => f.peerId === userId);
@@ -2787,11 +2648,9 @@ function renderProfile() {
         <h3 style="margin-bottom:12px;">Posts by ${escapeHtml(user.nick)}</h3>
         ${postsHtml}`;
 }
-
 function editProfile() {
     if (!currentUser) return;
     const user = DB.users[currentUser.id] || currentUser;
-
     showModal('Edit Profile', `
         <div class="form-group"><label>Nickname</label>
             <input type="text" id="editNick" maxlength="32" value="${escapeHtml(currentUser.nick)}"></div>
@@ -2803,7 +2662,6 @@ function editProfile() {
         { label: 'Save', class: 'btn-primary', onClick: () => {
             const newNick = document.getElementById('editNick').value.trim();
             if (!newNick) { showToast('Nickname cannot be empty.', 'error'); return; }
-
             currentUser.nick = newNick;
             if (DB.users[currentUser.id]) {
                 DB.users[currentUser.id].nick = newNick;
@@ -2813,11 +2671,9 @@ function editProfile() {
             DB.posts.forEach(p => { if (p.authorId === currentUser.id) p.nick = newNick; });
             DB.following.forEach(f => { if (f.peerId === currentUser.id) f.nick = newNick; });
             DB.followers.forEach(f => { if (f.peerId === currentUser.id) f.nick = newNick; });
-
             persist();
             document.getElementById('userName').textContent = newNick;
             document.getElementById('userAvatar').textContent = newNick.charAt(0).toUpperCase();
-
             renderProfile();
             renderFeed();
             renderMyPosts();
@@ -2825,7 +2681,6 @@ function editProfile() {
         }}
     ]);
 }
-
 function toggleFollow(userId, nick) {
     const idx = DB.following.findIndex(f => f.peerId === userId);
     if (idx >= 0) {
@@ -2833,76 +2688,62 @@ function toggleFollow(userId, nick) {
         persist();
         broadcastToFeed({ type: 'unfollow', targetId: userId, follower: { peerId: currentUser.id } });
         showToast('Unfollowed ' + nick, 'info');
+        updateModel({ text: '', authorId: userId, likedBy: [], dislikedBy: [], replies: [], reports: [], time: Date.now() }, -0.5);
     } else {
         DB.following.push({ peerId: userId, nick, time: Date.now() });
         persist();
-        broadcastToFeed({
-            type: 'follow',
-            targetId: userId,
-            follower: { peerId: currentUser.id, nick: currentUser.nick }
-        });
+        broadcastToFeed({ type: 'follow', targetId: userId, follower: { peerId: currentUser.id, nick: currentUser.nick } });
         showToast('Now following ' + nick, 'success');
+        updateModel({ text: '', authorId: userId, likedBy: [], dislikedBy: [], replies: [], reports: [], time: Date.now() }, 2.5);
     }
     renderProfile();
     renderFeed();
-    refreshAnalyticsIfActive();
 }
 
 /* ============================================================================
-   26. USER ANALYTICS
+   23. USER ANALYTICS
    ============================================================================ */
 let analyticsTimer = null;
-
 function startAnalyticsLive() {
     renderAnalytics();
     stopAnalyticsLive();
-    analyticsTimer = setInterval(renderAnalytics, ANALYTICS_REFRESH);
+    analyticsTimer = setInterval(() => {
+        decayMood();
+        renderAnalytics();
+    }, ANALYTICS_REFRESH);
 }
-
 function stopAnalyticsLive() {
-    if (analyticsTimer) {
-        clearInterval(analyticsTimer);
-        analyticsTimer = null;
-    }
+    if (analyticsTimer) { clearInterval(analyticsTimer); analyticsTimer = null; }
 }
-
 function refreshAnalyticsIfActive() {
     const view = document.getElementById('view-analytics');
     if (view && view.classList.contains('active')) renderAnalytics();
 }
-
 function computeUserAnalytics(userId) {
     const posts = DB.posts.filter(p => p.authorId === userId);
     const days = lastNDays(ANALYTICS_WINDOW);
     const daily = {};
     days.forEach(d => { daily[d] = { posts: 0, likes: 0, dislikes: 0, views: 0, reports: 0 }; });
-
-    const bump = (key, field, amount) => {
-        if (daily[key] && daily[key][field] !== undefined) daily[key][field] += amount;
-    };
+    const bump = (key, field, amount) => { if (daily[key] && daily[key][field] !== undefined) daily[key][field] += amount; };
 
     let likes = 0, dislikes = 0, views = 0, reports = 0, replies = 0;
-
     posts.forEach(post => {
         const likedBy     = post.likedBy || [];
         const dislikedBy  = post.dislikedBy || [];
         const viewedBy    = post.viewedBy || [];
         const postReplies = post.replies || [];
         const postReports = post.reports || [];
-
         likes    += likedBy.length;
         dislikes += dislikedBy.length;
         views    += Math.max(post.viewerCount || 0, viewedBy.length);
         reports  += postReports.length;
         replies  += postReplies.length;
-
         bump(dayKey(post.time), 'posts', 1);
         likedBy.forEach(x => bump(dayKey(x.time || post.time), 'likes', 1));
         dislikedBy.forEach(x => bump(dayKey(x.time || post.time), 'dislikes', 1));
         viewedBy.forEach(x => bump(dayKey(x.time || post.time), 'views', 1));
         postReports.forEach(x => bump(dayKey(x.time || post.time), 'reports', 1));
     });
-
     const interactions = likes + dislikes;
     const likeRatio = interactions > 0 ? (likes / interactions) * 100 : 0;
     const followers = DB.followers.filter(f => f.peerId === userId).length;
@@ -2911,26 +2752,18 @@ function computeUserAnalytics(userId) {
     const engagementRate = views > 0 ? ((likes + dislikes + replies) / views) * 100 : 0;
     const avgViews = posts.length ? views / posts.length : 0;
     const reputation = Math.round(getUserRep(userId));
-
-    const topPosts = posts
-        .slice()
-        .sort((a, b) => (b.likedBy || []).length - (a.likedBy || []).length)
-        .slice(0, 5);
-
+    const topPosts = posts.slice().sort((a, b) => (b.likedBy || []).length - (a.likedBy || []).length).slice(0, 5);
     return {
         posts, days, daily, likes, dislikes, views, reports, replies,
         likeRatio, followers, following, reportRate, engagementRate,
         avgViews, reputation, topPosts
     };
 }
-
 function renderAnalytics() {
     const el = document.getElementById('analyticsContent');
     if (!el || !currentUser) return;
-
     const scroller = el.closest('.main-body');
     const scrollTop = scroller ? scroller.scrollTop : 0;
-
     const a = computeUserAnalytics(currentUser.id);
     const likeWidth = a.likeRatio;
     const dislikeWidth = 100 - likeWidth;
@@ -2949,6 +2782,18 @@ function renderAnalytics() {
                 '</div>';
         }).join('')
         : '<p class="text-muted">No posts yet — publish something to start collecting data.</p>';
+
+    const m = DB.model;
+    const featureList = FeatureKeys
+        .map(k => ({ k, w: m.weights[k] || 0 }))
+        .filter(x => Math.abs(x.w) > 0.05)
+        .sort((x, y) => Math.abs(y.w) - Math.abs(x.w))
+        .slice(0, 6);
+    const featureHtml = featureList.length
+        ? featureList.map(f =>
+            '<div class="metric-row"><span class="metric-label">' + f.k +
+            '</span><span class="metric-value">' + f.w.toFixed(2) + '</span></div>').join('')
+        : '<p class="text-muted">Not enough interactions yet.</p>';
 
     el.innerHTML = `
         <div class="settings-section">
@@ -2994,6 +2839,21 @@ function renderAnalytics() {
         </div>
 
         <div class="settings-section">
+            <div class="settings-header">Ranking Model (live)</div>
+            <div style="padding:16px 18px;">
+                <div class="metric-list">
+                    ${metricRow('Interactions learned', formatNumber(m.interactionCount || 0))}
+                    ${metricRow('Session streak (days)', formatNumber(m.streakDays || 0))}
+                    ${metricRow('Engagement threshold', (m.engagementThreshold || 0.5).toFixed(2))}
+                    ${metricRow('Last model update', m.lastUpdate ? new Date(m.lastUpdate).toLocaleTimeString() : '—')}
+                </div>
+                <p class="text-muted" style="font-size:0.78rem;margin:12px 0 6px;">Top personalization weights</p>
+                <div class="metric-list">${featureHtml}</div>
+                <p style="margin-top:12px;font-size:0.8rem;color:var(--text-muted);">This model trains on this device only. It updates the moment you like, dislike, reply, report, or view a post.</p>
+            </div>
+        </div>
+
+        <div class="settings-section">
             <div class="settings-header">Last ${ANALYTICS_WINDOW} days</div>
             <div style="padding:16px 18px;">
                 <div class="chart-box"><canvas id="chartPosts"></canvas></div>
@@ -3025,28 +2885,23 @@ function setupCanvas(canvas) {
     const dpr = window.devicePixelRatio || 1;
     const width = Math.max(80, (parent ? parent.clientWidth : 300) - 20);
     const height = 120;
-
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
     canvas.style.width = width + 'px';
     canvas.style.height = height + 'px';
-
     const ctx = canvas.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
     return { ctx, width, height };
 }
-
 function drawBarChart(canvasId, values, color) {
     const canvas = document.getElementById(canvasId);
     if (!canvas || !values.length) return;
-
     const { ctx, width, height } = setupCanvas(canvas);
     const max = Math.max.apply(null, values.concat([1]));
     const pad = 8;
     const slot = (width - pad * 2) / values.length;
     const barWidth = Math.max(3, slot - 4);
-
     values.forEach((value, i) => {
         const barHeight = (value / max) * (height - pad * 2);
         const x = pad + i * slot;
@@ -3056,16 +2911,13 @@ function drawBarChart(canvasId, values, color) {
     });
     ctx.globalAlpha = 1;
 }
-
 function drawDualLineChart(canvasId, likes, dislikes) {
     const canvas = document.getElementById(canvasId);
     if (!canvas || !likes.length) return;
-
     const { ctx, width, height } = setupCanvas(canvas);
     const max = Math.max.apply(null, likes.concat(dislikes).concat([1]));
     const pad = 8;
     const step = (width - pad * 2) / Math.max(1, likes.length - 1);
-
     const strokeSeries = (series, color) => {
         ctx.beginPath();
         ctx.strokeStyle = color;
@@ -3078,7 +2930,6 @@ function drawDualLineChart(canvasId, likes, dislikes) {
             else ctx.lineTo(x, y);
         });
         ctx.stroke();
-
         ctx.fillStyle = color;
         series.forEach((value, i) => {
             const x = pad + i * step;
@@ -3088,13 +2939,12 @@ function drawDualLineChart(canvasId, likes, dislikes) {
             ctx.fill();
         });
     };
-
     strokeSeries(likes, '#52d869');
     strokeSeries(dislikes, '#ff4d4d');
 }
 
 /* ============================================================================
-   27. ROOMS
+   24. ROOMS
    ============================================================================ */
 let hostPeer = null;
 let guestPeer = null;
@@ -3110,30 +2960,25 @@ function slugifyRoom(name) {
     if (slug) return slug;
     return PureSHA256.hex(String(name || 'room')).slice(0, 12);
 }
-
 function roomPeerId(name, isPrivate, code) {
     const suffix = isPrivate ? String(code || '').toUpperCase() : 'pub';
     return 'yipyap-room-' + slugifyRoom(name) + '-' + suffix.toLowerCase();
 }
-
 function generateCode() {
     const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     let out = '';
     for (let i = 0; i < 4; i++) out += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
     return out;
 }
-
 function toggleHostCode() {
     const checked = document.getElementById('hostPrivateCheck').checked;
     document.getElementById('hostCodeDisplay').classList.toggle('hidden', !checked);
     if (checked) document.getElementById('generatedCode').value = generateCode();
 }
-
 function toggleJoinCode() {
     const checked = document.getElementById('joinPrivateCheck').checked;
     document.getElementById('joinCodeArea').classList.toggle('hidden', !checked);
 }
-
 function resetRoomState() {
     if (hostPeer)  { try { hostPeer.destroy(); } catch (_) {} hostPeer = null; }
     if (guestPeer) { try { guestPeer.destroy(); } catch (_) {} guestPeer = null; }
@@ -3148,50 +2993,36 @@ function resetRoomState() {
     const nav = document.getElementById('chatNavItem');
     if (nav) nav.hidden = true;
 }
-
 function startHost() {
     if (!peerLibraryAvailable()) { showToast('Network library unavailable.', 'error'); return; }
     if (!currentUser) return;
-
     const name = document.getElementById('hostRoomInput').value.trim();
     if (!name) { showToast('Enter a room name.', 'error'); return; }
-
     roomIsPrivate = document.getElementById('hostPrivateCheck').checked;
     roomCode = (document.getElementById('generatedCode').value || '').toUpperCase();
     if (roomIsPrivate && !roomCode) {
         roomCode = generateCode();
         document.getElementById('generatedCode').value = roomCode;
     }
-
     resetRoomState();
     roomName = name;
     myRole = 'host';
-
     const peerId = roomPeerId(roomName, roomIsPrivate, roomCode);
-
     try { hostPeer = new Peer(peerId, { debug: 0 }); }
-    catch (err) {
-        showToast('Could not start hosting.', 'error');
-        resetRoomState();
-        return;
-    }
+    catch (err) { showToast('Could not start hosting.', 'error'); resetRoomState(); return; }
 
     hostPeer.on('open', () => {
         switchView('chat');
         document.getElementById('chatNavItem').hidden = false;
         document.getElementById('roomLabel').textContent = 'Room: ' + roomName;
         document.getElementById('messages').innerHTML = '';
-        appendChatMsg('System',
-            'Room created. ' + (roomIsPrivate ? 'Code: ' + roomCode : 'Public room.'),
-            'system');
+        appendChatMsg('System', 'Room created. ' + (roomIsPrivate ? 'Code: ' + roomCode : 'Public room.'), 'system');
         if (!roomIsPrivate) registerPublicRoom(roomName);
     });
-
     hostPeer.on('connection', conn => {
         const nick = (conn.metadata && conn.metadata.nick) || 'Unknown';
         const peerKey = conn.peer || nick;
         hostConnections.push({ conn, nick, peerKey });
-
         conn.on('open', () => {
             appendChatMsg('System', nick + ' joined.', 'system');
             hostConnections.forEach(other => {
@@ -3200,20 +3031,15 @@ function startHost() {
                 }
             });
         });
-
         conn.on('data', raw => {
             const msg = safeParse(typeof raw === 'string' ? raw : JSON.stringify(raw), null);
             if (!msg || !msg.type) return;
-
             if (msg.type === 'chat') {
                 appendChatMsg(nick, msg.text, 'other', msg.attachment, msg.time);
                 hostConnections.forEach(other => {
                     if (other.conn !== conn && other.conn.open) {
                         try {
-                            other.conn.send(JSON.stringify({
-                                type: 'chat', nick, text: msg.text,
-                                attachment: msg.attachment, time: msg.time
-                            }));
+                            other.conn.send(JSON.stringify({ type: 'chat', nick, text: msg.text, attachment: msg.attachment, time: msg.time }));
                         } catch (_) {}
                     }
                 });
@@ -3227,7 +3053,6 @@ function startHost() {
                 });
             }
         });
-
         conn.on('close', () => {
             hostConnections = hostConnections.filter(e => e.conn !== conn);
             clearTypingFor(peerKey);
@@ -3238,55 +3063,35 @@ function startHost() {
                 }
             });
         });
-
         conn.on('error', () => {
             hostConnections = hostConnections.filter(e => e.conn !== conn);
             clearTypingFor(peerKey);
         });
     });
-
     hostPeer.on('error', err => {
-        if (err && err.type === 'unavailable-id') {
-            showToast('That room name is already in use. Try another.', 'error');
-        } else {
-            showToast('Hosting error. The room was closed.', 'error');
-        }
+        if (err && err.type === 'unavailable-id') showToast('That room name is already in use. Try another.', 'error');
+        else showToast('Hosting error. The room was closed.', 'error');
         resetRoomState();
         switchView('rooms');
     });
 }
-
 function startJoin() {
     if (!peerLibraryAvailable()) { showToast('Network library unavailable.', 'error'); return; }
     if (!currentUser) return;
-
     const name = document.getElementById('joinRoomInput').value.trim();
     if (!name) { showToast('Enter a room name.', 'error'); return; }
-
     roomIsPrivate = document.getElementById('joinPrivateCheck').checked;
     roomCode = (document.getElementById('joinCodeInput').value || '').toUpperCase();
-
     if (roomIsPrivate && !roomCode) { showToast('Enter the room code.', 'error'); return; }
-
     resetRoomState();
     roomName = name;
     myRole = 'guest';
-
     const targetId = roomPeerId(roomName, roomIsPrivate, roomCode);
-
     try { guestPeer = new Peer({ debug: 0 }); }
-    catch (err) {
-        showToast('Could not connect.', 'error');
-        resetRoomState();
-        return;
-    }
+    catch (err) { showToast('Could not connect.', 'error'); resetRoomState(); return; }
 
     guestPeer.on('open', () => {
-        guestConn = guestPeer.connect(targetId, {
-            metadata: { nick: currentUser.nick },
-            reliable: true
-        });
-
+        guestConn = guestPeer.connect(targetId, { metadata: { nick: currentUser.nick }, reliable: true });
         guestConn.on('open', () => {
             switchView('chat');
             document.getElementById('chatNavItem').hidden = false;
@@ -3294,114 +3099,68 @@ function startJoin() {
             document.getElementById('messages').innerHTML = '';
             appendChatMsg('System', 'Connected to the room.', 'system');
         });
-
         guestConn.on('data', raw => {
             const msg = safeParse(typeof raw === 'string' ? raw : JSON.stringify(raw), null);
             if (!msg || !msg.type) return;
-
             if (msg.type === 'chat') {
                 appendChatMsg(msg.nick, msg.text, 'other', msg.attachment, msg.time);
                 if (document.hidden) notify(msg.nick, (msg.text || '').slice(0, 60));
-            } else if (msg.type === 'system') {
-                appendChatMsg('System', msg.text, 'system');
-            } else if (msg.type === 'typing') {
-                showTypingIndicator(msg.peerKey || msg.nick, msg.nick);
-            }
+            } else if (msg.type === 'system') appendChatMsg('System', msg.text, 'system');
+            else if (msg.type === 'typing') showTypingIndicator(msg.peerKey || msg.nick, msg.nick);
         });
-
-        guestConn.on('close', () => {
-            appendChatMsg('System', 'Disconnected from the room.', 'system');
-        });
-
-        guestConn.on('error', () => {
-            showToast('Connection lost.', 'error');
-            resetRoomState();
-            switchView('rooms');
-        });
+        guestConn.on('close', () => appendChatMsg('System', 'Disconnected from the room.', 'system'));
+        guestConn.on('error', () => { showToast('Connection lost.', 'error'); resetRoomState(); switchView('rooms'); });
     });
-
     guestPeer.on('error', err => {
-        if (err && err.type === 'peer-unavailable') {
-            showToast('Room not found. Check the name and code.', 'error');
-        } else {
-            showToast('Could not join that room.', 'error');
-        }
+        if (err && err.type === 'peer-unavailable') showToast('Room not found. Check the name and code.', 'error');
+        else showToast('Could not join that room.', 'error');
         resetRoomState();
         switchView('rooms');
     });
 }
-
 function registerPublicRoom(room) {
     if (isDirectory) {
         if (!activePublicRooms.some(r => r.room === room && r.hostId === currentUser.id)) {
-            activePublicRooms.push({
-                room, host: currentUser.nick, hostId: currentUser.id, time: Date.now()
-            });
+            activePublicRooms.push({ room, host: currentUser.nick, hostId: currentUser.id, time: Date.now() });
         }
         return;
     }
     if (feedConn && feedConn.open) {
-        feedConn.send(JSON.stringify({
-            type: 'register_room', room, host: currentUser.nick, hostId: currentUser.id
-        }));
-    } else {
-        showToast('Not connected to the directory — the room will not be listed publicly.', 'warning');
-    }
+        feedConn.send(JSON.stringify({ type: 'register_room', room, host: currentUser.nick, hostId: currentUser.id }));
+    } else showToast('Not connected to the directory — the room will not be listed publicly.', 'warning');
 }
-
 function unregisterPublicRoom(room) {
     if (isDirectory) {
-        activePublicRooms = activePublicRooms.filter(
-            r => !(r.room === room && r.hostId === currentUser.id)
-        );
+        activePublicRooms = activePublicRooms.filter(r => !(r.room === room && r.hostId === currentUser.id));
         return;
     }
-    if (feedConn && feedConn.open) {
-        feedConn.send(JSON.stringify({ type: 'unregister_room', room, hostId: currentUser.id }));
-    }
+    if (feedConn && feedConn.open) feedConn.send(JSON.stringify({ type: 'unregister_room', room, hostId: currentUser.id }));
 }
-
 function fetchPublicRooms() {
     const el = document.getElementById('publicRoomsList');
     if (!el) return;
     el.innerHTML = '<div class="text-muted">Searching...</div>';
-
-    if (isDirectory) {
-        renderPublicRooms(activePublicRooms.filter(r => Date.now() - r.time < 3600000));
-        return;
-    }
+    if (isDirectory) { renderPublicRooms(activePublicRooms.filter(r => Date.now() - r.time < 3600000)); return; }
     if (feedConn && feedConn.open) {
         feedConn.send(JSON.stringify({ type: 'get_rooms' }));
         setTimeout(() => {
-            if (el.innerHTML.indexOf('Searching') !== -1) {
-                el.innerHTML = '<div class="text-muted">No rooms found.</div>';
-            }
+            if (el.innerHTML.indexOf('Searching') !== -1) el.innerHTML = '<div class="text-muted">No rooms found.</div>';
         }, 3000);
-    } else {
-        el.innerHTML = '<div class="text-muted">Not connected to the directory.</div>';
-    }
+    } else el.innerHTML = '<div class="text-muted">Not connected to the directory.</div>';
 }
-
 function renderPublicRooms(rooms) {
     const el = document.getElementById('publicRoomsList');
     if (!el) return;
-    if (!rooms || !rooms.length) {
-        el.innerHTML = '<div class="text-muted">No public rooms active.</div>';
-        return;
-    }
-    el.innerHTML = rooms
-        .slice()
-        .sort((a, b) => b.time - a.time)
-        .map(r => `
-            <div class="room-list-item">
-                <div class="room-info">
-                    <div class="room-name">${escapeHtml(r.room)}</div>
-                    <div class="room-meta">Host: ${escapeHtml(r.host)}</div>
-                </div>
-                <button class="btn btn-primary btn-small" data-act="quick-join" data-room="${escapeHtml(r.room)}">Join</button>
-            </div>`).join('');
+    if (!rooms || !rooms.length) { el.innerHTML = '<div class="text-muted">No public rooms active.</div>'; return; }
+    el.innerHTML = rooms.slice().sort((a, b) => b.time - a.time).map(r => `
+        <div class="room-list-item">
+            <div class="room-info">
+                <div class="room-name">${escapeHtml(r.room)}</div>
+                <div class="room-meta">Host: ${escapeHtml(r.host)}</div>
+            </div>
+            <button class="btn btn-primary btn-small" data-act="quick-join" data-room="${escapeHtml(r.room)}">Join</button>
+        </div>`).join('');
 }
-
 function quickJoinRoom(room) {
     document.getElementById('joinRoomInput').value = room;
     document.getElementById('joinPrivateCheck').checked = false;
@@ -3410,7 +3169,6 @@ function quickJoinRoom(room) {
     startJoin();
 }
 
-/* --------------------------- Chat + typing ------------------------------- */
 const TYPING_SEND_THROTTLE = 1200;
 const TYPING_CLEAR_MS = 2500;
 let lastTypingSentAt = 0;
@@ -3422,35 +3180,21 @@ function clearTypingState() {
     renderTypingIndicator();
     lastTypingSentAt = 0;
 }
-
 function clearTypingFor(key) {
-    if (typingUsers[key]) {
-        clearTimeout(typingUsers[key]);
-        delete typingUsers[key];
-        renderTypingIndicator();
-    }
+    if (typingUsers[key]) { clearTimeout(typingUsers[key]); delete typingUsers[key]; renderTypingIndicator(); }
 }
-
 function showTypingIndicator(key, nick) {
     if (!key) return;
     if (typingUsers[key]) clearTimeout(typingUsers[key]);
-    typingUsers[key] = setTimeout(() => {
-        delete typingUsers[key];
-        renderTypingIndicator();
-    }, TYPING_CLEAR_MS);
+    typingUsers[key] = setTimeout(() => { delete typingUsers[key]; renderTypingIndicator(); }, TYPING_CLEAR_MS);
     typingUsers[key].nick = nick;
     renderTypingIndicator();
 }
-
 function renderTypingIndicator() {
     const el = document.getElementById('typingIndicator');
     if (!el) return;
     const keys = Object.keys(typingUsers);
-    if (!keys.length) {
-        el.classList.remove('visible');
-        el.textContent = '';
-        return;
-    }
+    if (!keys.length) { el.classList.remove('visible'); el.textContent = ''; return; }
     const names = keys.map(k => typingUsers[k].nick || 'Someone');
     let label;
     if (names.length === 1) label = names[0] + ' is typing';
@@ -3459,89 +3203,58 @@ function renderTypingIndicator() {
     el.textContent = label + '…';
     el.classList.add('visible');
 }
-
 function onChatInputTyping() {
     if (!myRole || !currentUser) return;
     const now = Date.now();
     if (now - lastTypingSentAt < TYPING_SEND_THROTTLE) return;
     lastTypingSentAt = now;
-
     const payload = JSON.stringify({ type: 'typing', peerKey: myPeerId, nick: currentUser.nick });
-
     if (myRole === 'host') {
-        hostConnections.forEach(e => {
-            if (e.conn.open) { try { e.conn.send(payload); } catch (_) {} }
-        });
-    } else if (guestConn && guestConn.open) {
-        try { guestConn.send(payload); } catch (_) {}
-    }
+        hostConnections.forEach(e => { if (e.conn.open) { try { e.conn.send(payload); } catch (_) {} } });
+    } else if (guestConn && guestConn.open) { try { guestConn.send(payload); } catch (_) {} }
 }
-
 function sendChat() {
     if (!myRole || !currentUser) return;
     const input = document.getElementById('chatInput');
     if (!input) return;
-
     let text = input.value.trim();
     const attachment = (pendingAttachment && pendingAttachment.context === 'chat') ? pendingAttachment : null;
     if (!text && !attachment) return;
-
     text = censorText(text);
     input.value = '';
     if (attachment) clearAttachment('chat');
-
     const time = Date.now();
     appendChatMsg(currentUser.nick + ' (You)', text, 'self', attachment, time);
     trackEvent('messages');
-
     if (myRole === 'host') {
         hostConnections.forEach(e => {
             if (e.conn.open) {
-                try {
-                    e.conn.send(JSON.stringify({
-                        type: 'chat', nick: currentUser.nick,
-                        text, attachment, time
-                    }));
-                } catch (_) {}
+                try { e.conn.send(JSON.stringify({ type: 'chat', nick: currentUser.nick, text, attachment, time })); } catch (_) {}
             }
         });
     } else if (guestConn && guestConn.open) {
-        try {
-            guestConn.send(JSON.stringify({
-                type: 'chat', nick: currentUser.nick,
-                text, attachment, time
-            }));
-        } catch (_) {}
+        try { guestConn.send(JSON.stringify({ type: 'chat', nick: currentUser.nick, text, attachment, time })); } catch (_) {}
     }
 }
-
 function appendChatMsg(author, text, role, attachment, time) {
     const container = document.getElementById('messages');
     if (!container) return;
-
     const stamp = new Date(time || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
     if (role === 'system') {
-        container.insertAdjacentHTML('beforeend',
-            '<div class="chat-msg-system">' + escapeHtml(text) + '</div>');
+        container.insertAdjacentHTML('beforeend', '<div class="chat-msg-system">' + escapeHtml(text) + '</div>');
         container.scrollTop = container.scrollHeight;
         return;
     }
-
     const align = (DB.settings && DB.settings.chatAlign) || 'me-right';
     const isSelf = role === 'self';
-
     let isRight = false;
     if (align === 'me-right') isRight = isSelf;
     else if (align === 'me-left') isRight = !isSelf;
     else if (align === 'all-right') isRight = true;
-
     let cls = 'chat-msg';
     if (isRight) cls += ' right';
     if (isSelf) cls += ' self';
-
     const initial = (author || '?').charAt(0).toUpperCase();
-
     container.insertAdjacentHTML('beforeend', `
         <div class="${cls}">
             <div class="user-avatar" style="width:32px;height:32px;font-size:0.8rem;">${escapeHtml(initial)}</div>
@@ -3553,7 +3266,6 @@ function appendChatMsg(author, text, role, attachment, time) {
         </div>`);
     container.scrollTop = container.scrollHeight;
 }
-
 function leaveRoom() {
     showModal('Leave Room', '<p>Are you sure you want to leave this room?</p>', [
         { label: 'Cancel', class: 'btn-secondary' },
@@ -3566,13 +3278,15 @@ function leaveRoom() {
 }
 
 /* ============================================================================
-   28. SETTINGS
+   25. SETTINGS
    ============================================================================ */
 function renderSettings() {
     const el = document.getElementById('settingsContent');
     if (!el) return;
-
     const s = DB.settings;
+    const backups = getBackupIndex();
+    const backupCount = backups.length;
+    const lastBackup = backupCount ? new Date(backups[backupCount - 1].time).toLocaleString() : 'None';
 
     el.innerHTML = `
         <div class="settings-section">
@@ -3626,11 +3340,11 @@ function renderSettings() {
         <div class="settings-section">
             <div class="settings-header">Data &amp; Privacy</div>
             <div class="setting-row">
-                <div class="setting-info"><h4>Clear Feed Cache</h4><p>Remove downloaded feed posts from this device</p></div>
+                <div class="setting-info"><h4>Clear Feed Cache</h4><p>Remove downloaded feed posts from this device. Your own posts are kept.</p></div>
                 <button class="btn btn-danger btn-small" onclick="clearFeedCache()">Clear</button>
             </div>
             <div class="setting-row">
-                <div class="setting-info"><h4>Reset Algorithm</h4><p>Wipe the interest profile and like/dislike history</p></div>
+                <div class="setting-info"><h4>Reset Ranking Model</h4><p>Wipe the personalization weights, interest profile, and history</p></div>
                 <button class="btn btn-danger btn-small" onclick="resetAlgorithm()">Reset</button>
             </div>
             <div class="setting-row">
@@ -3648,6 +3362,31 @@ function renderSettings() {
         </div>
 
         <div class="settings-section">
+            <div class="settings-header">Backups</div>
+            <div class="setting-row">
+                <div class="setting-info"><h4>Automatic Backups</h4><p>${backupCount} stored backup${backupCount === 1 ? '' : 's'}</p></div>
+                <span class="text-muted">${escapeHtml(lastBackup)}</span>
+            </div>
+            <div class="setting-row">
+                <div class="setting-info"><h4>Create Backup Now</h4><p>Save a timestamped snapshot of your current data</p></div>
+                <button class="btn btn-secondary btn-small" onclick="manualBackup()">Backup</button>
+            </div>
+            <div class="setting-row">
+                <div class="setting-info"><h4>Clear Oldest Backup</h4><p>Frees space without touching posts</p></div>
+                <button class="btn btn-danger btn-small" onclick="clearOldestBackup()">Clear One</button>
+            </div>
+            <div class="setting-row">
+                <div class="setting-info"><h4>Export Data</h4><p>Download a JSON file containing accounts, posts, and settings</p></div>
+                <button class="btn btn-secondary btn-small" onclick="exportData()">Export</button>
+            </div>
+            <div class="setting-row">
+                <div class="setting-info"><h4>Import Data</h4><p>Merge a previous export. Existing posts are kept.</p></div>
+                <button class="btn btn-secondary btn-small" onclick="document.getElementById('importFileInput').click()">Import</button>
+                <input type="file" id="importFileInput" accept="application/json" class="hidden" onchange="importData(event)">
+            </div>
+        </div>
+
+        <div class="settings-section">
             <div class="settings-header">Network</div>
             <div class="setting-row">
                 <div class="setting-info"><h4>Connection Status</h4><p id="netStatus2">Checking...</p></div>
@@ -3657,43 +3396,30 @@ function renderSettings() {
                 <button class="btn btn-secondary btn-small" data-act="copy" data-copy="${escapeHtml(myPeerId || '')}">Copy ID</button>
             </div>
             <div class="setting-row">
-                <div class="setting-info"><h4>Storage Mode</h4><p>${Storage.isPersistent() ? 'Persistent local storage available' : 'Session-only storage (data will not survive a reload)'}</p></div>
+                <div class="setting-info"><h4>Storage Key</h4><p>${DB_KEY} (schema v${SCHEMA_VERSION})</p></div>
+                <span class="text-muted">${Storage.isPersistent() ? 'Persistent' : 'Session only'}</span>
             </div>
         </div>`;
-
     updateFeedStatus();
 }
-
-function setTheme(theme) {
-    DB.settings.theme = theme;
-    persist();
-    applyTheme();
-    renderSettings();
-}
-
+function setTheme(theme) { DB.settings.theme = theme; persist(); applyTheme(); renderSettings(); }
 function applyTheme() {
     const theme = (DB && DB.settings && DB.settings.theme) || 'dark';
     document.body.setAttribute('data-theme', theme);
 }
-
 function updateSetting(key, value) {
     DB.settings[key] = value;
     persist();
-
     if (key === 'notifications' && value && 'Notification' in window) {
-        if (Notification.permission === 'default') {
-            Notification.requestPermission().catch(() => {});
-        }
+        if (Notification.permission === 'default') Notification.requestPermission().catch(() => {});
     }
     if (key === 'sound' && value) playSound();
     renderSettings();
 }
-
 function clearAnalytics() {
     Storage.remove(ANALYTICS_KEY);
     showToast('Local analytics cleared.', 'success');
 }
-
 function clearFeedCache() {
     showModal('Clear Feed Cache', '<p>This removes all downloaded feed posts from this device. Your own posts are kept.</p>', [
         { label: 'Cancel', class: 'btn-secondary' },
@@ -3710,28 +3436,87 @@ function clearFeedCache() {
             persist();
             renderFeed();
             renderMyPosts();
-            refreshAnalyticsIfActive();
             showToast('Feed cache cleared.', 'success');
         }}
     ]);
 }
-
 function resetAlgorithm() {
     DB.interestProfile = {};
     DB.likedPosts = [];
     DB.dislikedPosts = [];
     DB.viewedPosts = [];
+    DB.model = defaultModel();
     persist();
     renderFeed();
     refreshAnalyticsIfActive();
-    showToast('Algorithm reset.', 'success');
+    showToast('Ranking model reset.', 'success');
 }
+function manualBackup() {
+    const key = createBackup('manual');
+    if (key) showToast('Backup created.', 'success');
+    else showToast('No data to back up.', 'warning');
+    renderSettings();
+}
+function clearOldestBackup() {
+    const index = getBackupIndex();
+    if (!index.length) { showToast('No backups to clear.', 'warning'); return; }
+    const oldest = index.shift();
+    Storage.remove(oldest.key);
+    saveBackupIndex(index);
+    showToast('Oldest backup removed.', 'success');
+    renderSettings();
+}
+function exportData() {
+    try {
+        const payload = JSON.stringify(DB, null, 2);
+        const blob = new Blob([payload], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'yipyap_export_' + new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-') + '.json';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+        showToast('Export downloaded.', 'success');
+    } catch (err) {
+        console.error('[export]', err);
+        showToast('Export failed.', 'error');
+    }
+}
+async function importData(event) {
+    const file = event.target.files && event.target.files[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        if (!parsed || typeof parsed !== 'object') throw new Error('Invalid file.');
 
+        const incoming = normalizeDB(parsed);
+        const known = new Set(DB.posts.map(p => p.id));
+        incoming.posts.forEach(p => { if (!known.has(p.id)) { DB.posts.push(p); known.add(p.id); } });
+        Object.assign(DB.users, incoming.users);
+        DB.reputation = Object.assign(DB.reputation, incoming.reputation);
+        DB.interestProfile = Object.assign(DB.interestProfile, incoming.interestProfile);
+
+        DB.posts.sort((a, b) => b.time - a.time);
+        trimPosts();
+        persist();
+        renderFeed();
+        renderMyPosts();
+        showToast('Import complete. Existing posts were kept.', 'success');
+    } catch (err) {
+        console.error('[import]', err);
+        showToast('Import failed. Check the file.', 'error');
+    }
+}
 function wipeAll() {
     showModal('Wipe All Data',
-        '<p>This permanently deletes your account, posts, settings and analytics from this device. This cannot be undone.</p>', [
+        '<p>This permanently deletes your account, posts, settings and analytics from this device. A backup will be kept in case you change your mind.</p>', [
         { label: 'Cancel', class: 'btn-secondary' },
         { label: 'Wipe Everything', class: 'btn-danger', onClick: async () => {
+            createBackup('pre-wipe');
             Storage.remove(DB_KEY);
             Storage.remove(SESSION_KEY);
             Storage.remove(ANALYTICS_KEY);
@@ -3742,12 +3527,11 @@ function wipeAll() {
 }
 
 /* ============================================================================
-   29. GLOBAL EVENT DELEGATION
+   26. EVENT DELEGATION
    ============================================================================ */
 document.addEventListener('click', event => {
     const target = event.target.closest('[data-act]');
     if (!target) return;
-
     const act = target.dataset.act;
     switch (act) {
         case 'profile':       viewUserProfile(target.dataset.uid, target.dataset.nick); break;
@@ -3765,7 +3549,6 @@ document.addEventListener('click', event => {
         default: break;
     }
 });
-
 document.addEventListener('keydown', event => {
     const el = event.target;
     if (el && el.dataset && el.dataset.replyInput && event.key === 'Enter') {
@@ -3775,36 +3558,26 @@ document.addEventListener('keydown', event => {
 });
 
 /* ============================================================================
-   30. LIFECYCLE
+   27. LIFECYCLE
    ============================================================================ */
 function flushPendingWork() {
-    if (viewFlushTimer) {
-        clearTimeout(viewFlushTimer);
-        viewFlushTimer = null;
-    }
+    if (viewFlushTimer) { clearTimeout(viewFlushTimer); viewFlushTimer = null; }
     if (pendingViewUpdates.length) {
         broadcastToFeed({ type: 'post_views', updates: pendingViewUpdates.slice(0, 60) });
         pendingViewUpdates = [];
     }
-    if (persistTimer) {
-        clearTimeout(persistTimer);
-        persistTimer = null;
-    }
+    if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }
     persist();
 }
-
 window.addEventListener('pagehide', flushPendingWork);
 window.addEventListener('beforeunload', flushPendingWork);
-
 window.addEventListener('storage', event => {
     if (event.key === SESSION_KEY || event.key === null) location.reload();
 });
-
 window.addEventListener('resize', () => {
     if (window.innerWidth > 768) toggleSidebar(false);
     if (document.getElementById('view-analytics').classList.contains('active')) renderAnalytics();
 });
-
 async function requestPersistentStorage() {
     try {
         if (navigator.storage && navigator.storage.persist) {
@@ -3815,13 +3588,220 @@ async function requestPersistentStorage() {
 }
 
 /* ============================================================================
-   31. BOOTSTRAP
+   28. VIEW NAVIGATION + AUTH + BOOTSTRAP
+   ============================================================================ */
+let currentUser = null;
+let myPeerId = null;
+let appInitialized = false;
+let authInFlight = false;
+let viewingUserId = null;
+
+function pruneGuestAccounts() {
+    const cutoff = Date.now() - 7 * 24 * 3600 * 1000;
+    const session = readSession();
+    const activeGuestId = session ? session.userId : null;
+    Object.keys(DB.users).forEach(id => {
+        const u = DB.users[id];
+        if (u && u.isGuest && id !== activeGuestId && (u.createdAt || 0) < cutoff) {
+            delete DB.users[id];
+            delete DB.reputation[id];
+        }
+    });
+}
+async function register() {
+    if (authInFlight) return;
+    const nickEl  = document.getElementById('regNick');
+    const emailEl = document.getElementById('regEmail');
+    const passEl  = document.getElementById('regPassword');
+    const ageOk   = document.getElementById('regAgeCheck').checked;
+    const termsOk = document.getElementById('regTermsCheck').checked;
+    const button  = document.getElementById('regBtn');
+    try {
+        const nick  = nickEl.value.trim();
+        const email = emailEl.value.trim().toLowerCase();
+        const pass  = passEl.value;
+        if (!nick || !email || !pass) throw new Error('Please fill in every field.');
+        if (nick.length > 32) throw new Error('Nickname must be 32 characters or fewer.');
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Please enter a valid email address.');
+        if (pass.length < 6) throw new Error('Password must be at least 6 characters.');
+        if (!ageOk) throw new Error('You must confirm you are 12 years of age or older.');
+        if (!termsOk) throw new Error('You must agree to the Terms of Service and Privacy Policy.');
+
+        authInFlight = true;
+        button.disabled = true;
+
+        const exists = Object.keys(DB.users).some(id => {
+            const u = DB.users[id];
+            return u && !u.isGuest && u.email === email;
+        });
+        if (exists) throw new Error('That email is already registered on this device.');
+
+        const credentials = await createPasswordRecord(pass);
+        const user = Object.assign({
+            id: uid('yp'), nick, email, createdAt: Date.now(),
+            bio: '', isGuest: false, ageConfirmed: true, termsAcceptedAt: Date.now()
+        }, credentials);
+        DB.users[user.id] = user;
+        if (DB.reputation[user.id] == null) DB.reputation[user.id] = 50;
+        pruneGuestAccounts();
+
+        const status = persist();
+        if (status === 'quota') throw new Error('Device storage is full. Free some space and try again.');
+        saveSession(user.id);
+        trackEvent('sessions');
+        initApp(user);
+        if (status === 'memory') showToast('Storage is blocked by the browser — your account will not survive a reload.', 'warning', 7000);
+        else showToast('Account created. Welcome to YipYap!', 'success');
+    } catch (err) {
+        console.error('[register]', err);
+        showAuthError('regError', err && err.message ? err.message : 'Could not create the account.');
+    } finally {
+        authInFlight = false;
+        if (button) button.disabled = false;
+    }
+}
+async function login() {
+    if (authInFlight) return;
+    const emailEl = document.getElementById('loginEmail');
+    const passEl  = document.getElementById('loginPassword');
+    const button  = document.getElementById('loginBtn');
+    try {
+        const email = emailEl.value.trim().toLowerCase();
+        const pass  = passEl.value;
+        if (!email || !pass) throw new Error('Please enter your email and password.');
+        if (!hasWebCrypto() && !window.isSecureContext) {
+            showToast('Running without WebCrypto — sign-in still works but hashing is weaker.', 'warning', 5000);
+        }
+        authInFlight = true;
+        button.disabled = true;
+
+        const user = Object.keys(DB.users)
+            .map(id => DB.users[id])
+            .find(u => u && !u.isGuest && u.email === email);
+        if (!user) throw new Error('No account found for that email on this device.');
+        if (!user.passHash) throw new Error('This account has no password. Try a different login method.');
+
+        const ok = await verifyPassword(pass, user);
+        if (!ok) throw new Error('Incorrect password.');
+
+        if (user.passAlgo !== 'pbkdf2-sha256') {
+            try { Object.assign(user, await createPasswordRecord(pass)); persist(); }
+            catch (upgradeErr) { console.warn('[login] password upgrade skipped', upgradeErr); }
+        }
+        const status = persist();
+        if (status === 'quota') throw new Error('Device storage is full. Free some space and try again.');
+        saveSession(user.id);
+        trackEvent('sessions');
+        initApp(user);
+    } catch (err) {
+        console.error('[login]', err);
+        showAuthError('loginError', err && err.message ? err.message : 'Could not sign in.');
+    } finally {
+        authInFlight = false;
+        if (button) button.disabled = false;
+    }
+}
+function loginAsGuest() {
+    try {
+        const user = {
+            id: uid('guest'),
+            nick: 'Guest' + Math.floor(Math.random() * 900 + 100),
+            email: null, passHash: null, passAlgo: null,
+            isGuest: true, createdAt: Date.now(), bio: ''
+        };
+        DB.users[user.id] = user;
+        if (DB.reputation[user.id] == null) DB.reputation[user.id] = 40;
+        pruneGuestAccounts();
+        persist();
+        saveSession(user.id);
+        trackEvent('sessions');
+        initApp(user);
+        showToast('Signed in as a guest. Data stays on this device.', 'info', 4200);
+    } catch (err) {
+        console.error('[guest]', err);
+        showToast('Could not start a guest session.', 'error');
+    }
+}
+function logout() {
+    showModal('Logout', '<p>Are you sure you want to log out?</p>', [
+        { label: 'Cancel', class: 'btn-secondary' },
+        { label: 'Logout', class: 'btn-danger', onClick: () => {
+            flushPendingWork();
+            clearSession();
+            destroyNetworkPeers();
+            location.reload();
+        }}
+    ]);
+}
+function destroyNetworkPeers() {
+    [directoryPeer, hostPeer, guestPeer].forEach(p => {
+        try { if (p && !p.destroyed) p.destroy(); } catch (_) {}
+    });
+    directoryPeer = hostPeer = guestPeer = null;
+    feedConn = null;
+    guestConn = null;
+    hostConnections = [];
+    activeFeedConns = [];
+}
+
+function initApp(user) {
+    currentUser = user;
+    myPeerId = user.id;
+    document.getElementById('authScreen').classList.add('hidden');
+    document.getElementById('userName').textContent = user.nick;
+    document.getElementById('userAvatar').textContent = (user.nick || '?').charAt(0).toUpperCase();
+
+    const statusEl = document.getElementById('userStatus');
+    if (user.isGuest) { statusEl.textContent = 'Guest'; statusEl.classList.add('offline'); }
+    else { statusEl.textContent = 'Online'; statusEl.classList.remove('offline'); }
+
+    applyTheme();
+    updateStreak();
+    resetSession();
+
+    renderFeed();
+    renderMyPosts();
+    renderProfile();
+    renderSettings();
+
+    if (!appInitialized) {
+        appInitialized = true;
+        initBackgroundPeer();
+    }
+}
+
+function switchView(viewName) {
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    const view = document.getElementById('view-' + viewName);
+    if (view) view.classList.add('active');
+
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    const nav = document.querySelector('.nav-item[data-view="' + viewName + '"]');
+    if (nav) nav.classList.add('active');
+
+    toggleSidebar(false);
+    if (viewName === 'profile')   { viewingUserId = null; renderProfile(); }
+    if (viewName === 'settings')  renderSettings();
+    if (viewName === 'myposts')   renderMyPosts();
+    if (viewName === 'feed')      renderFeed();
+    if (viewName === 'analytics') startAnalyticsLive();
+    else stopAnalyticsLive();
+}
+function toggleSidebar(force) {
+    const sidebar  = document.getElementById('sidebar');
+    const backdrop = document.getElementById('backdrop');
+    if (force === false) { sidebar.classList.remove('open'); backdrop.classList.remove('show'); return; }
+    sidebar.classList.toggle('open');
+    backdrop.classList.toggle('show');
+}
+
+/* ============================================================================
+   29. BOOTSTRAP
    ============================================================================ */
 window.addEventListener('DOMContentLoaded', async () => {
     loadDB();
     await initAttachments();
     applyTheme();
-
     pruneOrphanAttachments();
 
     const session = readSession();
@@ -3832,7 +3812,6 @@ window.addEventListener('DOMContentLoaded', async () => {
         clearSession();
         showToast('Your saved session could not be restored. Please log in again.', 'warning', 6000);
     }
-
     if (!Storage.isPersistent()) {
         showToast('Local storage is unavailable. Accounts and posts will not survive a reload.', 'warning', 8000);
     }
@@ -3845,24 +3824,26 @@ window.addEventListener('DOMContentLoaded', async () => {
     const postInput = document.getElementById('postInput');
     if (postInput) {
         postInput.addEventListener('keydown', e => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                postMessage();
-            }
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); postMessage(); }
         });
     }
-
     const chatInput = document.getElementById('chatInput');
     if (chatInput) {
-        chatInput.addEventListener('keydown', e => {
-            if (e.key === 'Enter') { e.preventDefault(); sendChat(); }
-        });
+        chatInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); sendChat(); } });
         chatInput.addEventListener('input', onChatInputTyping);
     }
+
+    // Mood decay loop runs continuously while the app is open.
+    setInterval(() => {
+        if (DB && DB.model) {
+            decayMood();
+            schedulePersist(4000);
+        }
+    }, 30000);
 });
 
 /* ============================================================================
-   32. PUBLIC SURFACE
+   30. PUBLIC SURFACE
    ============================================================================ */
 window.switchView = switchView;
 window.toggleSidebar = toggleSidebar;
@@ -3888,6 +3869,10 @@ window.updateSetting = updateSetting;
 window.clearAnalytics = clearAnalytics;
 window.clearFeedCache = clearFeedCache;
 window.resetAlgorithm = resetAlgorithm;
+window.manualBackup = manualBackup;
+window.clearOldestBackup = clearOldestBackup;
+window.exportData = exportData;
+window.importData = importData;
 window.wipeAll = wipeAll;
 window.editProfile = editProfile;
 window.viewUserProfile = viewUserProfile;
